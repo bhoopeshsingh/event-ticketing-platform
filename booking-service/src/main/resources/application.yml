@@ -1,0 +1,203 @@
+# Booking Service Configuration
+spring:
+  application:
+    name: booking-service
+
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+
+  # Database Configuration
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:ticketing}
+    username: ${DB_USERNAME:ticketing_user}
+    password: ${DB_PASSWORD:ticketing_pass}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:20}
+      minimum-idle: 5
+      idle-timeout: 300000
+      connection-timeout: 20000
+      leak-detection-threshold: 60000
+
+  # JPA Configuration
+  jpa:
+    hibernate:
+      ddl-auto: ${DDL_AUTO:validate}
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+        use_sql_comments: false
+        jdbc:
+          batch_size: 20
+        order_inserts: true
+        order_updates: true
+    show-sql: ${SHOW_SQL:false}
+
+  # Redis Configuration
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DB:0}
+      timeout: 2s
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 0
+          max-wait: -1ms
+
+  # Kafka Configuration
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      retries: 3
+      batch-size: 16KB
+      buffer-memory: 32MB
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+# Server Configuration
+server:
+  port: ${SERVER_PORT:8082}
+  shutdown: graceful
+  tomcat:
+    threads:
+      max: 200
+      min-spare: 10
+
+# Management & Monitoring
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,info,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+
+# Business Configuration
+booking:
+  hold:
+    duration:
+      minutes: ${HOLD_DURATION_MINUTES:10}
+    cleanup:
+      interval:
+        minutes: ${CLEANUP_INTERVAL_MINUTES:2}
+  max:
+    seats:
+      per:
+        booking: ${MAX_SEATS_PER_BOOKING:10}
+    concurrent:
+      holds:
+        per:
+          customer: ${MAX_CONCURRENT_HOLDS:3}
+
+# Kafka Topics
+kafka:
+  topics:
+    seat-hold-created: ${KAFKA_TOPIC_SEAT_HOLD_CREATED:seat-hold-created}
+    seat-hold-confirmed: ${KAFKA_TOPIC_SEAT_HOLD_CONFIRMED:seat-hold-confirmed}
+    seat-hold-cancelled: ${KAFKA_TOPIC_SEAT_HOLD_CANCELLED:seat-hold-cancelled}
+    seat-hold-expired: ${KAFKA_TOPIC_SEAT_HOLD_EXPIRED:seat-hold-expired}
+    booking-confirmed: ${KAFKA_TOPIC_BOOKING_CONFIRMED:booking-confirmed}
+
+# Resilience Configuration
+resilience4j:
+  circuitbreaker:
+    instances:
+      payment-service:
+        registerHealthIndicator: true
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        permittedNumberOfCallsInHalfOpenState: 3
+        waitDurationInOpenState: 30s
+        failureRateThreshold: 50
+        recordExceptions:
+          - java.net.ConnectException
+          - java.net.SocketTimeoutException
+  retry:
+    instances:
+      payment-service:
+        maxAttempts: 3
+        waitDuration: 1s
+        retryExceptions:
+          - java.net.ConnectException
+          - java.net.SocketTimeoutException
+  timelimiter:
+    instances:
+      payment-service:
+        timeoutDuration: 10s
+
+# Logging
+logging:
+  level:
+    com.ticketing: ${LOG_LEVEL:INFO}
+    org.springframework.kafka: WARN
+    org.hibernate.SQL: ${SQL_LOG_LEVEL:WARN}
+    org.hibernate.type.descriptor.sql.BasicBinder: ${SQL_PARAM_LOG_LEVEL:WARN}
+  pattern:
+    file: '%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [%X{traceId:-},%X{spanId:-}] %logger{36} - %msg%n'
+    console: '%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [%X{traceId:-},%X{spanId:-}] %logger{36} - %msg%n'
+
+---
+# Development Profile
+spring:
+  config:
+    activate:
+      on-profile: dev
+  jpa:
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+logging:
+  level:
+    com.ticketing: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+
+---
+# Test Profile
+spring:
+  config:
+    activate:
+      on-profile: test
+  datasource:
+    url: jdbc:h2:mem:testdb
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: password
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+  data:
+    redis:
+      host: localhost
+      port: 6370  # Different port for test Redis
+
+---
+# Production Profile
+spring:
+  config:
+    activate:
+      on-profile: prod
+  jpa:
+    show-sql: false
+  data:
+    redis:
+      cluster:
+        nodes: ${REDIS_CLUSTER_NODES}
+        max-redirects: 3
+
+logging:
+  level:
+    com.ticketing: INFO
+    root: WARN

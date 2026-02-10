@@ -1,0 +1,143 @@
+# Event Service Configuration
+spring:
+  application:
+    name: event-service
+
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+
+  # Database Configuration
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:ticketing}
+    username: ${DB_USERNAME:ticketing_user}
+    password: ${DB_PASSWORD:ticketing_pass}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:20}
+      minimum-idle: 5
+      idle-timeout: 300000
+      connection-timeout: 20000
+
+  # JPA Configuration
+  jpa:
+    hibernate:
+      ddl-auto: ${DDL_AUTO:validate}
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+        jdbc:
+          batch_size: 20
+    show-sql: ${SHOW_SQL:false}
+
+  # Redis Configuration for Caching
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DB:1}
+      timeout: 2s
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 0
+
+# Server Configuration
+server:
+  port: ${SERVER_PORT:8081}
+  shutdown: graceful
+
+# Management & Monitoring
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,info,prometheus
+  endpoint:
+    health:
+      show-details: always
+
+# Cache Configuration
+spring:
+  cache:
+    type: redis
+    redis:
+      time-to-live: 300000  # 5 minutes default TTL
+      cache-null-values: false
+
+# Custom cache TTLs
+cache:
+  ttl:
+    events: 300          # 5 minutes
+    event-details: 600   # 10 minutes
+    event-with-seats: 60 # 1 minute (more dynamic)
+    popular-events: 600  # 10 minutes
+    upcoming-events: 300 # 5 minutes
+    active-cities: 3600  # 1 hour
+    active-categories: 3600 # 1 hour
+
+# Logging
+logging:
+  level:
+    com.ticketing: ${LOG_LEVEL:INFO}
+    org.hibernate.SQL: ${SQL_LOG_LEVEL:WARN}
+  pattern:
+    file: '%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [%X{traceId:-},%X{spanId:-}] %logger{36} - %msg%n'
+    console: '%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [%X{traceId:-},%X{spanId:-}] %logger{36} - %msg%n'
+
+---
+# Development Profile
+spring:
+  config:
+    activate:
+      on-profile: dev
+  jpa:
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+logging:
+  level:
+    com.ticketing: DEBUG
+    org.hibernate.SQL: DEBUG
+
+---
+# Test Profile
+spring:
+  config:
+    activate:
+      on-profile: test
+  datasource:
+    url: jdbc:h2:mem:testdb
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: password
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+  data:
+    redis:
+      host: localhost
+      port: 6371  # Different port for test
+
+---
+# Production Profile
+spring:
+  config:
+    activate:
+      on-profile: prod
+  jpa:
+    show-sql: false
+  data:
+    redis:
+      cluster:
+        nodes: ${REDIS_CLUSTER_NODES}
+        max-redirects: 3
+
+logging:
+  level:
+    com.ticketing: INFO
+    root: WARN

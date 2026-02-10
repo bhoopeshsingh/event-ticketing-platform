@@ -1,0 +1,84 @@
+# Compiled class files
+
+*.pid
+application-local.properties
+application-local.yml
+# Application specific
+
+Thumbs.db
+.DS_Store
+# OS
+
+.vscode/
+# VS Code
+
+/.nb-gradle/
+/nbdist/
+/dist/
+/nbbuild/
+/nbproject/private/
+# NetBeans
+
+!**/src/test/**/bin/
+!**/src/main/**/bin/
+bin/
+.sts4-cache
+.springBeans
+.settings
+.project
+.factorypath
+.classpath
+.apt_generated
+# Eclipse
+
+!**/src/test/**/out/
+!**/src/main/**/out/
+out/
+*.ipr
+*.iml
+*.iws
+.idea/
+# IntelliJ IDEA
+
+!**/src/test/**/build/
+!**/src/main/**/build/
+!gradle/wrapper/gradle-wrapper.jar
+build/
+.gradle
+# Gradle
+
+.mvn/wrapper/maven-wrapper.jar
+.mvn/timing.properties
+buildNumber.properties
+dependency-reduced-pom.xml
+release.properties
+pom.xml.next
+pom.xml.versionsBackup
+pom.xml.releaseBackup
+pom.xml.tag
+target/
+# Maven
+
+replay_pid*
+hs_err_pid*
+# Virtual machine crash logs
+
+*.rar
+*.tar.gz
+*.zip
+*.ear
+*.nar
+*.war
+*.jar
+# Package Files
+
+.mtj.tmp/
+# Mobile Tools for Java (J2ME)
+
+*.ctxt
+# BlueJ files
+
+*.log
+# Log files
+
+*.class
