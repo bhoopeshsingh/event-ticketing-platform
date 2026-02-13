@@ -367,9 +367,7 @@ docker-compose down -v
 - ✅ Event streaming with Kafka
 - ✅ RESTful APIs with Swagger documentation
 - ✅ Docker Compose infrastructure
-- ✅ Sample data loaded (3 events, 1000 seats)
-- 🚧 Queue Service for flash sales (planned)
-- 🚧 API Gateway (planned)
+- ✅ Sample data loaded (3 events, 100 seats)
 
 ## 📝 License
 
