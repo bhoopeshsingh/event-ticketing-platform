@@ -4,15 +4,13 @@ import jakarta.persistence.*;
 import jakarta.validation.constraints.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
-import org.hibernate.annotations.UpdateTimestamp;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "pricing_tiers", indexes = {
-    @Index(name = "idx_pricing_event", columnList = "event_id"),
-    @Index(name = "idx_pricing_tier", columnList = "tier_name")
+    @Index(name = "idx_pricing_event", columnList = "event_id")
 })
 @Data
 @NoArgsConstructor
@@ -30,7 +28,7 @@ public class PricingTier {
 
     @NotBlank
     @Size(max = 50)
-    @Column(name = "tier_name", nullable = false)
+    @Column(name = "name", nullable = false)
     private String tierName; // VIP, Premium, Regular, Economy
 
     @NotNull
@@ -41,42 +39,39 @@ public class PricingTier {
     @Size(max = 500)
     private String description;
 
-    @NotNull
-    @Min(0)
-    @Column(name = "available_seats", nullable = false)
-    private Integer availableSeats;
+    @Column(name = "max_quantity")
+    private Integer maxQuantity;
 
-    @NotNull
-    @Min(0)
-    @Column(name = "total_seats", nullable = false)
-    private Integer totalSeats;
+    @Column(name = "available_quantity")
+    private Integer availableQuantity;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
-    @UpdateTimestamp
-    @Column(name = "updated_at", nullable = false)
-    private LocalDateTime updatedAt;
-
     // Helper methods
     public boolean hasAvailableSeats() {
-        return availableSeats > 0;
+        return availableQuantity != null && availableQuantity > 0;
     }
 
     public void reserveSeats(int count) {
-        if (availableSeats >= count) {
-            this.availableSeats -= count;
+        if (availableQuantity != null && availableQuantity >= count) {
+            this.availableQuantity -= count;
         } else {
             throw new IllegalStateException("Not enough available seats in tier: " + tierName);
         }
     }
 
     public void releaseSeats(int count) {
-        this.availableSeats = Math.min(this.availableSeats + count, this.totalSeats);
+        if (availableQuantity != null && maxQuantity != null) {
+            this.availableQuantity = Math.min(this.availableQuantity + count, this.maxQuantity);
+        }
     }
 
     public double getOccupancyRate() {
-        return totalSeats > 0 ? (double) (totalSeats - availableSeats) / totalSeats : 0.0;
+        if (maxQuantity != null && maxQuantity > 0 && availableQuantity != null) {
+            return (double) (maxQuantity - availableQuantity) / maxQuantity;
+        }
+        return 0.0;
     }
 }

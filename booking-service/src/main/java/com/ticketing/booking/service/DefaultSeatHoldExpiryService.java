@@ -3,8 +3,8 @@ package com.ticketing.booking.service;
 import com.ticketing.booking.repository.SeatHoldRepository;
 import com.ticketing.booking.repository.SeatRepository;
 import com.ticketing.common.entity.SeatHold;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.data.redis.connection.Message;
 import org.springframework.data.redis.connection.MessageListener;
 import org.springframework.data.redis.listener.PatternTopic;
@@ -17,32 +17,58 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
+
 @Service
 @Slf4j
-@RequiredArgsConstructor
 public class DefaultSeatHoldExpiryService implements SeatHoldExpiryService {
 
     private final RedisMessageListenerContainer redisMessageListenerContainer;
     private final SeatHoldRepository seatHoldRepository;
     private final SeatRepository seatRepository;
     private final EventMessagingService messagingService;
+    private final DefaultSeatHoldExpiryService self;
 
     private static final String SEAT_HOLD_PREFIX = "seat_hold:";
+    
+    // Explicit constructor with @Lazy on self to break circular dependency
+    public DefaultSeatHoldExpiryService(
+            RedisMessageListenerContainer redisMessageListenerContainer,
+            SeatHoldRepository seatHoldRepository,
+            SeatRepository seatRepository,
+            EventMessagingService messagingService,
+            @Lazy DefaultSeatHoldExpiryService self) {
+        this.redisMessageListenerContainer = redisMessageListenerContainer;
+        this.seatHoldRepository = seatHoldRepository;
+        this.seatRepository = seatRepository;
+        this.messagingService = messagingService;
+        this.self = self;
+    }
+
 
     @PostConstruct
     public void init() {
+        log.info("=== INITIALIZING REDIS KEYSPACE NOTIFICATION LISTENER ===");
+        log.info("Redis connection factory: {}", redisMessageListenerContainer.getConnectionFactory());
+        
         // Subscribe to Redis keyspace notifications for expired keys
         redisMessageListenerContainer.addMessageListener(
             this,
             new PatternTopic("__keyevent@0__:expired")
         );
 
-        log.info("Initialized Redis keyspace notification listener for seat hold expiry");
+        log.info("=== REDIS LISTENER INITIALIZED SUCCESSFULLY ===");
+        log.info("Subscribed to pattern: __keyevent@0__:expired");
+        log.info("Seat hold prefix: {}", SEAT_HOLD_PREFIX);
     }
 
     @Override
     public void onMessage(Message message, byte[] pattern) {
         String expiredKey = new String(message.getBody());
+        
+        log.info("=== RECEIVED REDIS EXPIRY NOTIFICATION ===");
+        log.info("Expired key: {}", expiredKey);
+        log.info("Pattern: {}", new String(pattern));
+        log.info("Message channel: {}", new String(message.getChannel()));
 
         // Only process seat hold keys
         if (expiredKey.startsWith(SEAT_HOLD_PREFIX)) {
@@ -50,11 +76,15 @@ public class DefaultSeatHoldExpiryService implements SeatHoldExpiryService {
             log.info("Processing expired seat hold: {}", holdToken);
 
             try {
-                handleExpiredSeatHold(holdToken);
+                // Call through self-reference to enable @Transactional proxy
+                self.handleExpiredSeatHold(holdToken);
+                log.info("=== SUCCESSFULLY PROCESSED EXPIRED HOLD: {} ===", holdToken);
             } catch (Exception e) {
-                log.error("Error processing expired seat hold: {}", holdToken, e);
+                log.error("=== ERROR PROCESSING EXPIRED SEAT HOLD: {} ===", holdToken, e);
                 // Continue processing other expired holds
             }
+        } else {
+            log.debug("Ignoring non-seat-hold expired key: {}", expiredKey);
         }
     }
 

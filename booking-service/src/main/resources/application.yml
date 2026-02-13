@@ -100,10 +100,10 @@ springdoc:
 booking:
   hold:
     duration:
-      minutes: ${HOLD_DURATION_MINUTES:5}
+      minutes: ${HOLD_DURATION_MINUTES:2}
     cleanup:
       interval:
-        minutes: ${CLEANUP_INTERVAL_MINUTES:2}
+        minutes: ${CLEANUP_INTERVAL_MINUTES:20}
   max:
     seats:
       per:

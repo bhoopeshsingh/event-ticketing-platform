@@ -2,12 +2,14 @@ package com.ticketing.booking.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 
+@Slf4j
 @Configuration
 public class RedisConfig {
 
@@ -19,8 +21,17 @@ public class RedisConfig {
     @Bean
     public RedisMessageListenerContainer redisMessageListenerContainer(
             RedisConnectionFactory connectionFactory) {
+        log.info("Creating RedisMessageListenerContainer");
+        
         RedisMessageListenerContainer container = new RedisMessageListenerContainer();
         container.setConnectionFactory(connectionFactory);
+        
+        // Add error handler to catch any listener errors
+        container.setErrorHandler(e -> {
+            log.error("=== REDIS LISTENER CONTAINER ERROR ===", e);
+        });
+        
+        log.info("RedisMessageListenerContainer created successfully");
         return container;
     }
 
