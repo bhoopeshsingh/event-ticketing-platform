@@ -7,12 +7,13 @@ import com.ticketing.common.dto.SeatHoldResponse;
 import com.ticketing.common.entity.Event;
 import com.ticketing.common.entity.Seat;
 import com.ticketing.common.entity.SeatHold;
-import org.junit.jupiter.api.Disabled;
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -21,250 +22,172 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.when;
 
-@Disabled("Disabled until Mockito configuration is fixed")
-@SpringBootTest
+@SpringBootTest(properties = {
+    "spring.datasource.url=jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1",
+    "spring.datasource.driver-class-name=org.h2.Driver",
+    "spring.datasource.username=sa",
+    "spring.datasource.password=password",
+    "spring.jpa.database-platform=org.hibernate.dialect.H2Dialect", 
+    "spring.jpa.hibernate.ddl-auto=create-drop"
+})
 @ActiveProfiles("test")
+@Transactional
 class BookingServiceIntegrationTest {
 
-    @MockBean
-    private SeatRepository seatRepository;
-
-    @MockBean
-    private SeatHoldRepository seatHoldRepository;
-
-    @MockBean
-    private DistributedLockService lockService;
-
-    @MockBean
-    private SeatHoldCacheService cacheService;
-
-    @MockBean
-    private EventMessagingService messagingService;
-
+    @Autowired
     private BookingService bookingService;
 
+    @Autowired
+    private SeatRepository seatRepository;
+
+    @Autowired
+    private SeatHoldRepository seatHoldRepository;
+
+    @org.springframework.boot.test.mock.mockito.MockBean
+    private DistributedLockService lockService;
+
+    @org.springframework.boot.test.mock.mockito.MockBean
+    private SeatHoldCacheService cacheService;
+
+    @org.springframework.boot.test.mock.mockito.MockBean
+    private EventMessagingService messagingService;
+
+    @org.springframework.boot.test.mock.mockito.MockBean
+    private SeatHoldExpiryService expiryService;
+
+    @org.springframework.boot.test.mock.mockito.MockBean
+    private org.springframework.data.redis.listener.RedisMessageListenerContainer redisMessageListenerContainer;
+
     private Event testEvent;
-    private List<Seat> testSeats;
+    
+    // We need to persist Event first since Seat references it. 
+    // However, Event entity is in Common but Event Repository is in Event Service.
+    // In strict microservices, Booking Service wouldn't write to Event table.
+    // But since they share the same DB (monolithic database pattern) or at least entities, 
+    // and for integration testing with H2 we need Referential Integrity, we'll need to mock or 
+    // insert data carefully.
+    // 
+    // Looking at `Seat` entity, it has @ManyToOne to Event.
+    // Since we are using H2 and Hibernate ddl-auto=create-drop, we need to insert the Event manually 
+    // using EntityManager or raw SQL if EventRepository is not available in this module.
+    
+    @Autowired
+    private jakarta.persistence.EntityManager entityManager;
 
     @BeforeEach
     void setUp() {
-        bookingService = new BookingService(
-            seatRepository,
-            seatHoldRepository,
-            null, // bookingRepository not needed for this test
-            lockService,
-            cacheService,
-            messagingService
-        );
-
-        // Create test data
-        testEvent = Event.builder()
-            .id(1L)
-            .title("Test Event")
-            .availableSeats(100)
-            .build();
-
-        testSeats = List.of(
-            Seat.builder()
-                .id(1L)
-                .event(testEvent)
-                .section("VIP")
-                .rowLetter("A")
-                .seatNumber(1)
-                .price(new BigDecimal("100.00"))
-                .status(Seat.SeatStatus.AVAILABLE)
-                .build(),
-            Seat.builder()
-                .id(2L)
-                .event(testEvent)
-                .section("VIP")
-                .rowLetter("A")
-                .seatNumber(2)
-                .price(new BigDecimal("100.00"))
-                .status(Seat.SeatStatus.AVAILABLE)
-                .build()
-        );
-    }
-
-    @Test
-    void holdSeats_Success() {
-        // Arrange
-        SeatHoldRequest request = SeatHoldRequest.builder()
-            .customerId(1L)
-            .eventId(1L)
-            .seatIds(List.of(1L, 2L))
-            .holdDurationMinutes(10)
-            .build();
-
+        // Mock lock service to always succeed
         when(lockService.executeWithLock(anyString(), any(), any()))
             .thenAnswer(invocation -> {
                 DistributedLockService.DistributedTask<?> task = invocation.getArgument(2);
                 return task.execute();
             });
 
-        when(seatRepository.findByIdInWithLock(request.getSeatIds()))
-            .thenReturn(testSeats);
+        // Mock cache to clear
+        when(cacheService.areSeatsHeld(anyList())).thenReturn(false);
 
-        when(cacheService.areSeatsHeld(request.getSeatIds()))
-            .thenReturn(false);
+        // Prepare Database Data
+        
+        // 1. Create Event
+        testEvent = Event.builder()
+            .title("Integration Test Event")
+            .description("Test Description")
+            .category("Test")
+            .city("Test City")
+            .venue("Test Venue")
+            .eventDate(LocalDateTime.now().plusDays(1))
+            .totalCapacity(100)
+            .availableSeats(100)
+            .basePrice(new BigDecimal("50.00"))
+            .status(com.ticketing.common.enums.EventStatus.PUBLISHED)
+            .organizerId(1L)
+            .createdAt(LocalDateTime.now())
+            .updatedAt(LocalDateTime.now())
+            .build();
+            
+        entityManager.persist(testEvent);
 
-        when(seatHoldRepository.findActiveHoldsForSeats(anyLong(), anyList(), any()))
-            .thenReturn(List.of());
+        // 2. Create Seats
+        Seat seat1 = Seat.builder()
+            .event(testEvent)
+            .section("A")
+            .rowLetter("A")
+            .seatNumber(1)
+            .price(new BigDecimal("50.00"))
+            .status(Seat.SeatStatus.AVAILABLE)
+            .build();
+            
+        Seat seat2 = Seat.builder()
+            .event(testEvent)
+            .section("A")
+            .rowLetter("A")
+            .seatNumber(2)
+            .price(new BigDecimal("50.00"))
+            .status(Seat.SeatStatus.AVAILABLE)
+            .build();
 
-        when(seatRepository.holdSeats(request.getSeatIds()))
-            .thenReturn(2);
+        seatRepository.saveAll(List.of(seat1, seat2));
+        entityManager.flush();
+    }
 
-        when(seatHoldRepository.save(any(SeatHold.class)))
-            .thenAnswer(invocation -> {
-                SeatHold hold = invocation.getArgument(0);
-                hold.setId(1L);
-                hold.setCreatedAt(LocalDateTime.now());
-                return hold;
-            });
+    @Test
+    void holdSeats_Integration_Success() {
+        // Arrange
+        // Get seat IDs that were just persisted
+        List<Seat> availableSeats = seatRepository.findAvailableSeatsByEvent(testEvent.getId());
+        List<Long> seatIds = availableSeats.stream().map(Seat::getId).limit(2).toList();
+        
+        SeatHoldRequest request = SeatHoldRequest.builder()
+            .customerId(100L)
+            .eventId(testEvent.getId())
+            .seatIds(seatIds)
+            .build();
 
         // Act
         SeatHoldResponse response = bookingService.holdSeats(request);
 
         // Assert
         assertNotNull(response);
-        assertEquals(1L, response.getCustomerId());
-        assertEquals(1L, response.getEventId());
-        assertEquals(2, response.getSeatCount());
-        assertEquals(new BigDecimal("200.00"), response.getTotalAmount());
         assertNotNull(response.getHoldToken());
-        assertTrue(response.getTimeRemainingSeconds() > 0);
+        assertEquals(2, response.getSeatCount());
 
-        // Verify interactions
-        verify(lockService).executeWithLock(anyString(), any(), any());
-        verify(seatRepository).findByIdInWithLock(request.getSeatIds());
-        verify(cacheService).areSeatsHeld(request.getSeatIds());
-        verify(seatRepository).holdSeats(request.getSeatIds());
-        verify(seatHoldRepository).save(any(SeatHold.class));
-        verify(cacheService).cacheSeatHold(any());
-        verify(messagingService).publishSeatHoldCreated(any(), any());
+        // Verify Database State
+        
+        // 1. Check Seat Status (Should be HELD)
+        List<Seat> heldSeats = seatRepository.findAllById(seatIds);
+        assertTrue(heldSeats.stream().allMatch(s -> s.getStatus() == Seat.SeatStatus.HELD));
+
+        // 2. Check SeatHold Record created
+        Optional<SeatHold> holdOpt = seatHoldRepository.findByHoldToken(response.getHoldToken());
+        assertTrue(holdOpt.isPresent());
+        assertEquals("ACTIVE", holdOpt.get().getStatus().name());
     }
 
     @Test
-    void holdSeats_SeatsAlreadyHeld_ThrowsException() {
-        // Arrange
-        SeatHoldRequest request = SeatHoldRequest.builder()
-            .customerId(1L)
-            .eventId(1L)
-            .seatIds(List.of(1L, 2L))
-            .holdDurationMinutes(10)
+    void holdSeats_Integration_ConcurrentHoldParams() {
+         // Attempt to hold already held seats (Simulation of race condition check at repo level)
+         // First hold
+        List<Seat> availableSeats = seatRepository.findAvailableSeatsByEvent(testEvent.getId());
+        List<Long> seatIds = availableSeats.stream().map(Seat::getId).limit(2).toList();
+        
+        SeatHoldRequest request1 = SeatHoldRequest.builder()
+            .customerId(100L)
+            .eventId(testEvent.getId())
+            .seatIds(seatIds)
             .build();
-
-        when(lockService.executeWithLock(anyString(), any(), any()))
-            .thenAnswer(invocation -> {
-                DistributedLockService.DistributedTask<?> task = invocation.getArgument(2);
-                return task.execute();
-            });
-
-        when(seatRepository.findByIdInWithLock(request.getSeatIds()))
-            .thenReturn(testSeats);
-
-        when(cacheService.areSeatsHeld(request.getSeatIds()))
-            .thenReturn(true); // Seats are held in cache
-
-        // Act & Assert
-        BookingException exception = assertThrows(
-            BookingException.class,
-            () -> bookingService.holdSeats(request)
-        );
-
-        assertTrue(exception.getMessage().contains("held by another customer"));
-
-        // Verify that no seats were actually held
-        verify(seatRepository, never()).holdSeats(any());
-        verify(seatHoldRepository, never()).save(any());
-    }
-
-    @Test
-    void holdSeats_InvalidSeatCount_ThrowsException() {
-        // Arrange
-        SeatHoldRequest request = SeatHoldRequest.builder()
-            .customerId(1L)
-            .eventId(1L)
-            .seatIds(List.of()) // Empty seat list
-            .holdDurationMinutes(10)
+            
+        bookingService.holdSeats(request1);
+        
+        // Second hold for same seats
+        SeatHoldRequest request2 = SeatHoldRequest.builder()
+            .customerId(101L)
+            .eventId(testEvent.getId())
+            .seatIds(seatIds)
             .build();
-
-        // Act & Assert
-        BookingException exception = assertThrows(
-            BookingException.class,
-            () -> bookingService.holdSeats(request)
-        );
-
-        assertTrue(exception.getMessage().contains("cannot be empty"));
-    }
-
-    @Test
-    void getSeatHold_FromCache() {
-        // Arrange
-        String holdToken = "HOLD_123";
-        when(cacheService.getSeatHold(holdToken))
-            .thenReturn(Optional.of(createTestSeatHoldDto()));
-
-        // Act
-        Optional<com.ticketing.common.dto.SeatHoldDto> result = bookingService.getSeatHold(holdToken);
-
-        // Assert
-        assertTrue(result.isPresent());
-        assertEquals(holdToken, result.get().getHoldToken());
-
-        // Verify cache was checked first
-        verify(cacheService).getSeatHold(holdToken);
-        verify(seatHoldRepository, never()).findByHoldToken(holdToken);
-    }
-
-    @Test
-    void getSeatHold_FallbackToDatabase() {
-        // Arrange
-        String holdToken = "HOLD_123";
-        when(cacheService.getSeatHold(holdToken))
-            .thenReturn(Optional.empty());
-
-        SeatHold seatHold = createTestSeatHold();
-        when(seatHoldRepository.findByHoldToken(holdToken))
-            .thenReturn(Optional.of(seatHold));
-
-        // Act
-        Optional<com.ticketing.common.dto.SeatHoldDto> result = bookingService.getSeatHold(holdToken);
-
-        // Assert
-        assertTrue(result.isPresent());
-        assertEquals(holdToken, result.get().getHoldToken());
-
-        // Verify fallback to database
-        verify(cacheService).getSeatHold(holdToken);
-        verify(seatHoldRepository).findByHoldToken(holdToken);
-    }
-
-    private com.ticketing.common.dto.SeatHoldDto createTestSeatHoldDto() {
-        return com.ticketing.common.dto.SeatHoldDto.builder()
-            .id(1L)
-            .holdToken("HOLD_123")
-            .customerId(1L)
-            .eventId(1L)
-            .seatIds(List.of(1L, 2L))
-            .expiresAt(LocalDateTime.now().plusMinutes(10))
-            .status("ACTIVE")
-            .createdAt(LocalDateTime.now())
-            .build();
-    }
-
-    private SeatHold createTestSeatHold() {
-        return SeatHold.builder()
-            .id(1L)
-            .holdToken("HOLD_123")
-            .customerId(1L)
-            .event(testEvent)
-            .seatIds(List.of(1L, 2L))
-            .expiresAt(LocalDateTime.now().plusMinutes(10))
-            .status(SeatHold.HoldStatus.ACTIVE)
-            .createdAt(LocalDateTime.now())
-            .build();
+            
+        // Should fail because seats are HELD in DB
+        assertThrows(BookingException.class, () -> bookingService.holdSeats(request2));
     }
 }

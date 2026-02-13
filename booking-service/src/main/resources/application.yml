@@ -22,7 +22,7 @@ spring:
   # JPA Configuration
   jpa:
     hibernate:
-      ddl-auto: ${DDL_AUTO:validate}
+      ddl-auto: ${DDL_AUTO:update}
     properties:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
@@ -82,11 +82,25 @@ management:
       prometheus:
         enabled: true
 
+# SpringDoc OpenAPI Configuration
+springdoc:
+  api-docs:
+    path: /api-docs
+    enabled: true
+  swagger-ui:
+    path: /swagger-ui.html
+    enabled: true
+    tryItOutEnabled: true
+    operationsSorter: method
+    tagsSorter: alpha
+    displayRequestDuration: true
+  show-actuator: false
+
 # Business Configuration
 booking:
   hold:
     duration:
-      minutes: ${HOLD_DURATION_MINUTES:10}
+      minutes: ${HOLD_DURATION_MINUTES:5}
     cleanup:
       interval:
         minutes: ${CLEANUP_INTERVAL_MINUTES:2}

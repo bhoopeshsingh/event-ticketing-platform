@@ -4,6 +4,8 @@ import jakarta.persistence.*;
 import jakarta.validation.constraints.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.Type;
+import io.hypersistence.utils.hibernate.type.array.ListArrayType;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -29,6 +31,10 @@ public class SeatHold {
     @Column(name = "hold_token", nullable = false, unique = true)
     private String holdToken; // UUID for external reference
 
+    @Size(max = 100)
+    @Column(name = "lock_token")
+    private String lockToken; // Redis distributed lock token for pessimistic-free booking confirmation
+
     @NotNull
     @Column(name = "customer_id", nullable = false)
     private Long customerId;
@@ -37,14 +43,13 @@ public class SeatHold {
     @JoinColumn(name = "event_id", nullable = false)
     private Event event;
 
-    @ElementCollection(fetch = FetchType.EAGER)
-    @CollectionTable(
-        name = "seat_hold_seats",
-        joinColumns = @JoinColumn(name = "hold_id"),
-        indexes = @Index(name = "idx_hold_seats", columnList = "hold_id, seat_ids")
-    )
-    @Column(name = "seat_ids")
+    @Type(ListArrayType.class)
+    @Column(name = "seat_ids", nullable = false, columnDefinition = "bigint[]")
     private List<Long> seatIds; // List of held seat IDs
+
+    @NotNull
+    @Column(name = "seat_count", nullable = false)
+    private Integer seatCount;
 
     @NotNull
     @Column(name = "expires_at", nullable = false)
@@ -58,6 +63,9 @@ public class SeatHold {
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
+
+    @Column(name = "updated_at")
+    private LocalDateTime updatedAt;
 
     public enum HoldStatus {
         ACTIVE, EXPIRED, CONFIRMED, CANCELLED

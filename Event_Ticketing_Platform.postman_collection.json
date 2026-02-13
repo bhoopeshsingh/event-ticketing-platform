@@ -1,0 +1,403 @@
+{
+  "info": {
+    "_postman_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "name": "Event Ticketing Platform",
+    "description": "API collection for Event Ticketing Platform with 10-minute seat hold TTL",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "EVENT_SERVICE_URL", "value": "http://localhost:8081", "type": "string" },
+    { "key": "BOOKING_SERVICE_URL", "value": "http://localhost:8082", "type": "string" },
+    { "key": "holdToken", "value": "", "type": "string" },
+    { "key": "bookingReference", "value": "", "type": "string" },
+    { "key": "eventId", "value": "1", "type": "string" },
+    { "key": "customerId", "value": "1", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "1. Event Service",
+      "item": [
+        {
+          "name": "Get Upcoming Events",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{EVENT_SERVICE_URL}}/api/events/upcoming",
+              "host": ["{{EVENT_SERVICE_URL}}"],
+              "path": ["api", "events", "upcoming"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Search Events by City",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{EVENT_SERVICE_URL}}/api/events?city=New York",
+              "host": ["{{EVENT_SERVICE_URL}}"],
+              "path": ["api", "events"],
+              "query": [
+                { "key": "city", "value": "New York" }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Search Events by Category",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{EVENT_SERVICE_URL}}/api/events?category=Music",
+              "host": ["{{EVENT_SERVICE_URL}}"],
+              "path": ["api", "events"],
+              "query": [
+                { "key": "category", "value": "Music" }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Event by ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{EVENT_SERVICE_URL}}/api/events/{{eventId}}",
+              "host": ["{{EVENT_SERVICE_URL}}"],
+              "path": ["api", "events", "{{eventId}}"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Event Seats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{EVENT_SERVICE_URL}}/api/events/{{eventId}}/seats",
+              "host": ["{{EVENT_SERVICE_URL}}"],
+              "path": ["api", "events", "{{eventId}}", "seats"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Available Seats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{EVENT_SERVICE_URL}}/api/events/{{eventId}}/seats/available",
+              "host": ["{{EVENT_SERVICE_URL}}"],
+              "path": ["api", "events", "{{eventId}}", "seats", "available"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Cities",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{EVENT_SERVICE_URL}}/api/events/cities",
+              "host": ["{{EVENT_SERVICE_URL}}"],
+              "path": ["api", "events", "cities"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Categories",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{EVENT_SERVICE_URL}}/api/events/categories",
+              "host": ["{{EVENT_SERVICE_URL}}"],
+              "path": ["api", "events", "categories"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{EVENT_SERVICE_URL}}/actuator/health",
+              "host": ["{{EVENT_SERVICE_URL}}"],
+              "path": ["actuator", "health"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. Booking Service",
+      "item": [
+        {
+          "name": "Create Seat Hold (10 min TTL)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.holdToken) {",
+                  "    pm.collectionVariables.set('holdToken', jsonData.holdToken);",
+                  "    console.log('Hold Token saved: ' + jsonData.holdToken);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": {{customerId}},\n  \"eventId\": {{eventId}},\n  \"seatIds\": [1, 2, 3],\n  \"holdDurationMinutes\": 10\n}"
+            },
+            "url": {
+              "raw": "{{BOOKING_SERVICE_URL}}/api/bookings/hold",
+              "host": ["{{BOOKING_SERVICE_URL}}"],
+              "path": ["api", "bookings", "hold"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Hold Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BOOKING_SERVICE_URL}}/api/bookings/hold/{{holdToken}}",
+              "host": ["{{BOOKING_SERVICE_URL}}"],
+              "path": ["api", "bookings", "hold", "{{holdToken}}"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Confirm Booking",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.bookingReference) {",
+                  "    pm.collectionVariables.set('bookingReference', jsonData.bookingReference);",
+                  "    console.log('Booking Reference saved: ' + jsonData.bookingReference);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"holdToken\": \"{{holdToken}}\",\n  \"customerId\": {{customerId}},\n  \"paymentId\": \"PAY_TEST_12345\",\n  \"customerEmail\": \"test@example.com\"\n}"
+            },
+            "url": {
+              "raw": "{{BOOKING_SERVICE_URL}}/api/bookings/{{holdToken}}/confirm",
+              "host": ["{{BOOKING_SERVICE_URL}}"],
+              "path": ["api", "bookings", "{{holdToken}}", "confirm"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Booking Details",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BOOKING_SERVICE_URL}}/api/bookings/{{bookingReference}}",
+              "host": ["{{BOOKING_SERVICE_URL}}"],
+              "path": ["api", "bookings", "{{bookingReference}}"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Cancel Seat Hold",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{BOOKING_SERVICE_URL}}/api/bookings/hold/{{holdToken}}?customerId={{customerId}}",
+              "host": ["{{BOOKING_SERVICE_URL}}"],
+              "path": ["api", "bookings", "hold", "{{holdToken}}"],
+              "query": [
+                { "key": "customerId", "value": "{{customerId}}" }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BOOKING_SERVICE_URL}}/actuator/health",
+              "host": ["{{BOOKING_SERVICE_URL}}"],
+              "path": ["actuator", "health"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "3. Test Scenarios",
+      "item": [
+        {
+          "name": "Complete Booking Flow",
+          "item": [
+            {
+              "name": "Step 1 - Get Event",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{EVENT_SERVICE_URL}}/api/events/1",
+                  "host": ["{{EVENT_SERVICE_URL}}"],
+                  "path": ["api", "events", "1"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Step 2 - Get Available Seats",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{EVENT_SERVICE_URL}}/api/events/1/seats/available",
+                  "host": ["{{EVENT_SERVICE_URL}}"],
+                  "path": ["api", "events", "1", "seats", "available"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Step 3 - Hold Seats",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "var jsonData = pm.response.json();",
+                      "if (jsonData.holdToken) {",
+                      "    pm.collectionVariables.set('holdToken', jsonData.holdToken);",
+                      "}"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "Content-Type", "value": "application/json" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"customerId\": 1,\n  \"eventId\": 1,\n  \"seatIds\": [10, 11, 12],\n  \"holdDurationMinutes\": 10\n}"
+                },
+                "url": {
+                  "raw": "{{BOOKING_SERVICE_URL}}/api/bookings/hold",
+                  "host": ["{{BOOKING_SERVICE_URL}}"],
+                  "path": ["api", "bookings", "hold"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Step 4 - Check Hold Status",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{BOOKING_SERVICE_URL}}/api/bookings/hold/{{holdToken}}",
+                  "host": ["{{BOOKING_SERVICE_URL}}"],
+                  "path": ["api", "bookings", "hold", "{{holdToken}}"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Step 5 - Confirm Booking",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "var jsonData = pm.response.json();",
+                      "if (jsonData.bookingReference) {",
+                      "    pm.collectionVariables.set('bookingReference', jsonData.bookingReference);",
+                      "}"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "Content-Type", "value": "application/json" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"holdToken\": \"{{holdToken}}\",\n  \"customerId\": 1,\n  \"paymentId\": \"PAY_TEST_123\",\n  \"customerEmail\": \"test@example.com\"\n}"
+                },
+                "url": {
+                  "raw": "{{BOOKING_SERVICE_URL}}/api/bookings/{{holdToken}}/confirm",
+                  "host": ["{{BOOKING_SERVICE_URL}}"],
+                  "path": ["api", "bookings", "{{holdToken}}", "confirm"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Step 6 - Verify Booking",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{BOOKING_SERVICE_URL}}/api/bookings/{{bookingReference}}",
+                  "host": ["{{BOOKING_SERVICE_URL}}"],
+                  "path": ["api", "bookings", "{{bookingReference}}"]
+                }
+              },
+              "response": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+

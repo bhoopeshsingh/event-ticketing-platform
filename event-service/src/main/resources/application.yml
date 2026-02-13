@@ -8,7 +8,7 @@ spring:
 
   # Database Configuration
   datasource:
-    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:ticketing}
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:ticketing}?stringtype=unspecified
     username: ${DB_USERNAME:ticketing_user}
     password: ${DB_PASSWORD:ticketing_pass}
     driver-class-name: org.postgresql.Driver
@@ -21,7 +21,7 @@ spring:
   # JPA Configuration
   jpa:
     hibernate:
-      ddl-auto: ${DDL_AUTO:validate}
+      ddl-auto: ${DDL_AUTO:update}
     properties:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
@@ -44,6 +44,13 @@ spring:
           max-idle: 8
           min-idle: 0
 
+  # Cache Configuration
+  cache:
+    type: redis
+    redis:
+      time-to-live: 300000  # 5 minutes default TTL
+      cache-null-values: false
+
 # Server Configuration
 server:
   port: ${SERVER_PORT:8081}
@@ -59,13 +66,20 @@ management:
     health:
       show-details: always
 
-# Cache Configuration
-spring:
-  cache:
-    type: redis
-    redis:
-      time-to-live: 300000  # 5 minutes default TTL
-      cache-null-values: false
+# SpringDoc OpenAPI Configuration
+springdoc:
+  api-docs:
+    path: /api-docs
+    enabled: true
+  swagger-ui:
+    path: /swagger-ui.html
+    enabled: true
+    tryItOutEnabled: true
+    operationsSorter: method
+    tagsSorter: alpha
+    displayRequestDuration: true
+  show-actuator: false
+
 
 # Custom cache TTLs
 cache:

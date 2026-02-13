@@ -29,7 +29,7 @@ public interface BookingRepository extends JpaRepository<Booking, Long> {
      * Find confirmed bookings by customer
      */
     @Query("SELECT b FROM Booking b WHERE b.customerId = :customerId " +
-           "AND b.status = com.ticketing.common.entity.Booking.BookingStatus.CONFIRMED " +
+           "AND b.status = 'CONFIRMED' " +
            "ORDER BY b.createdAt DESC")
     List<Booking> findConfirmedBookingsByCustomer(@Param("customerId") Long customerId);
 
@@ -47,7 +47,7 @@ public interface BookingRepository extends JpaRepository<Booking, Long> {
      * Count confirmed bookings for an event
      */
     @Query("SELECT COUNT(b) FROM Booking b WHERE b.event.id = :eventId " +
-           "AND b.status = com.ticketing.common.entity.Booking.BookingStatus.CONFIRMED")
+           "AND b.status = 'CONFIRMED'")
     long countConfirmedBookingsForEvent(@Param("eventId") Long eventId);
 
     /**
@@ -67,7 +67,7 @@ public interface BookingRepository extends JpaRepository<Booking, Long> {
      */
     @Query("SELECT CASE WHEN COUNT(b) > 0 THEN true ELSE false END " +
            "FROM Booking b WHERE b.event.id = :eventId " +
-           "AND b.status = com.ticketing.common.entity.Booking.BookingStatus.CONFIRMED " +
+           "AND b.status = 'CONFIRMED' " +
            "AND EXISTS (SELECT 1 FROM b.seatIds si WHERE si IN :seatIds)")
     boolean areSeatsAlreadyBooked(@Param("eventId") Long eventId, @Param("seatIds") List<Long> seatIds);
 }

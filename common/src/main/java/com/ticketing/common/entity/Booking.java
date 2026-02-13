@@ -4,6 +4,8 @@ import jakarta.persistence.*;
 import jakarta.validation.constraints.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.Type;
+import io.hypersistence.utils.hibernate.type.array.ListArrayType;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -39,12 +41,8 @@ public class Booking {
     @JoinColumn(name = "event_id", nullable = false)
     private Event event;
 
-    @ElementCollection(fetch = FetchType.EAGER)
-    @CollectionTable(
-        name = "booking_seats",
-        joinColumns = @JoinColumn(name = "booking_id")
-    )
-    @Column(name = "seat_ids")
+    @Type(ListArrayType.class)
+    @Column(name = "seat_ids", nullable = false, columnDefinition = "bigint[]")
     private List<Long> seatIds;
 
     @NotNull

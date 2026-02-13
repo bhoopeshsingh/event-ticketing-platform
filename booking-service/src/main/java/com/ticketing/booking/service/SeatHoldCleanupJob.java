@@ -18,7 +18,7 @@ public class SeatHoldCleanupJob {
      * Scheduled cleanup job that runs every 2 minutes as backup to Redis TTL notifications
      * This ensures that expired holds are cleaned up even if Redis notifications are missed
      */
-    @Scheduled(fixedRateString = "${booking.hold.cleanup.interval.minutes:2}000")
+   // @Scheduled(fixedRateString = "${booking.hold.cleanup.interval.minutes:2}000")
     public void cleanupExpiredHolds() {
         log.debug("Starting scheduled cleanup of expired seat holds");
 
@@ -32,7 +32,7 @@ public class SeatHoldCleanupJob {
     /**
      * Bulk cleanup job that runs every 5 minutes to mark expired holds in batch
      */
-    @Scheduled(fixedRateString = "300000") // 5 minutes
+   // @Scheduled(fixedRateString = "300000") // 5 minutes
     public void bulkCleanupExpiredHolds() {
         log.debug("Starting bulk cleanup of expired seat holds");
 

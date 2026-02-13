@@ -3,13 +3,16 @@ package com.ticketing.common.dto;
 import jakarta.validation.constraints.*;
 import lombok.*;
 
+import java.io.Serializable;
 import java.math.BigDecimal;
 
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-public class SeatDto {
+public class SeatDto implements Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     private Long id;
 

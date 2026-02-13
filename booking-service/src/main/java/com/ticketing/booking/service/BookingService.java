@@ -9,14 +9,17 @@ import com.ticketing.common.util.TokenGenerator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 @Service
 @Slf4j
@@ -29,6 +32,7 @@ public class BookingService {
     private final DistributedLockService lockService;
     private final SeatHoldCacheService cacheService;
     private final EventMessagingService messagingService;
+    private final StringRedisTemplate redisTemplate;
 
     @Value("${booking.hold.duration.minutes:10}")
     private int defaultHoldDurationMinutes;
@@ -50,6 +54,8 @@ public class BookingService {
             return lockService.executeWithLock(eventLockKey, lockTimeout, () -> {
                 return createSeatHoldInternal(request);
             });
+        } catch (BookingException e) {
+            throw e;
         } catch (RuntimeException e) {
             log.error("Failed to acquire lock for seat hold request: {}", request, e);
             throw new BookingException("Unable to process seat hold request. Please try again.", e);
@@ -57,77 +63,133 @@ public class BookingService {
     }
 
     private SeatHoldResponse createSeatHoldInternal(SeatHoldRequest request) {
-        // 1. Validate seat availability
-        List<Seat> seats = seatRepository.findByIdInWithLock(request.getSeatIds());
+        // 1. Validate seat availability (no pessimistic lock)
+        List<Seat> seats = seatRepository.findByIdIn(request.getSeatIds());
         validateSeatsForHold(seats, request);
 
-        // 2. Check Redis cache for conflicting holds
-        if (cacheService.areSeatsHeld(request.getSeatIds())) {
+        // 2. Try to acquire Redis locks for each seat using SET NX EX pattern
+        String lockToken = UUID.randomUUID().toString();
+        List<String> acquiredLocks = new ArrayList<>();
+        boolean allLocksAcquired = true;
+
+        for (Long seatId : request.getSeatIds()) {
+            String seatLockKey = "seat:lock:" + seatId;
+            Duration lockDuration = Duration.ofMinutes(defaultHoldDurationMinutes);
+            
+            // Redis SET NX EX: setIfAbsent with expiry
+            Boolean acquired = redisTemplate.opsForValue().setIfAbsent(
+                seatLockKey, 
+                lockToken, 
+                lockDuration
+            );
+            
+            if (Boolean.TRUE.equals(acquired)) {
+                acquiredLocks.add(seatLockKey);
+            } else {
+                allLocksAcquired = false;
+                break;
+            }
+        }
+
+        // 3. If we couldn't acquire all locks, release any we got and fail
+        if (!allLocksAcquired) {
+            releaseLocks(acquiredLocks, lockToken);
             throw new BookingException("One or more seats are currently held by another customer");
         }
 
-        // 3. Check database for conflicting holds
-        List<SeatHold> activeHolds = seatHoldRepository.findActiveHoldsForSeats(
-            request.getEventId(), request.getSeatIds(), LocalDateTime.now());
-        if (!activeHolds.isEmpty()) {
-            throw new BookingException("Seats are already held. Please select different seats.");
+        try {
+            // 4. Double-check database for conflicting holds
+            List<SeatHold> activeHolds = seatHoldRepository.findActiveHoldsForSeats(
+                request.getEventId(), request.getSeatIds().toArray(new Long[0]), LocalDateTime.now());
+            if (!activeHolds.isEmpty()) {
+                throw new BookingException("Seats are already held. Please select different seats.");
+            }
+
+            // 5. Create seat hold with lock token
+            LocalDateTime expiresAt = LocalDateTime.now()
+                .plusMinutes(defaultHoldDurationMinutes);
+
+            SeatHold seatHold = SeatHold.builder()
+                .holdToken(TokenGenerator.generateHoldToken())
+                .lockToken(lockToken)  // Store Redis lock token
+                .customerId(request.getCustomerId())
+                .event(seats.get(0).getEvent())
+                .seatIds(request.getSeatIds())
+                .seatCount(request.getSeatIds().size())
+                .expiresAt(expiresAt)
+                .status(SeatHold.HoldStatus.ACTIVE)
+                .build();
+
+            // 6. Update seat status to HELD (conditional update)
+            int updatedSeats = seatRepository.holdSeats(request.getSeatIds());
+            if (updatedSeats != request.getSeatIds().size()) {
+                throw new BookingException("Some seats became unavailable during booking process");
+            }
+
+            // 7. Save hold to database
+            seatHold = seatHoldRepository.save(seatHold);
+
+            // 8. Cache the hold with TTL
+            SeatHoldDto holdDto = convertToDto(seatHold);
+            cacheService.cacheSeatHold(holdDto);
+
+            // 8b. Create a Redis key for expiry notification
+            // This key will trigger keyspace notification when it expires
+            String holdExpiryKey = "seat_hold:" + seatHold.getHoldToken();
+            Duration holdDuration = Duration.ofMinutes(defaultHoldDurationMinutes);
+            redisTemplate.opsForValue().set(holdExpiryKey, seatHold.getHoldToken(), holdDuration);
+            log.debug("Created expiry notification key: {} with TTL: {} minutes", 
+                     holdExpiryKey, defaultHoldDurationMinutes);
+
+            // 9. Publish event for audit trail
+            messagingService.publishSeatHoldCreated(holdDto, seats);
+
+            // 10. Calculate total amount and build response
+            BigDecimal totalAmount = seats.stream()
+                .map(Seat::getPrice)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+            String eventTitle = seats.get(0).getEvent().getTitle();
+
+            log.info("Seat hold created successfully: {} for customer: {} with {} seats",
+                    seatHold.getHoldToken(), request.getCustomerId(), request.getSeatIds().size());
+
+            SeatHoldResponse response = new SeatHoldResponse();
+            response.setHoldToken(holdDto.getHoldToken());
+            response.setCustomerId(holdDto.getCustomerId());
+            response.setEventId(holdDto.getEventId());
+            response.setEventTitle(eventTitle);
+            response.setSeatCount(holdDto.getSeatCount());
+            response.setTotalAmount(totalAmount);
+            response.setExpiresAt(holdDto.getExpiresAt());
+            response.setTimeRemainingSeconds(holdDto.getTimeRemainingSeconds());
+            response.setStatus(holdDto.getStatus());
+            response.setCreatedAt(holdDto.getCreatedAt());
+            response.setMessage("Seats held successfully. Complete payment within " +
+                    (holdDto.getTimeRemainingSeconds() / 60) + " minutes.");
+
+            return response;
+        } catch (Exception e) {
+            // Release locks on any error
+            releaseLocks(acquiredLocks, lockToken);
+            throw e;
         }
+    }
 
-        // 4. Create seat hold
-        LocalDateTime expiresAt = LocalDateTime.now()
-            .plusMinutes(request.getHoldDurationMinutes());
-
-        SeatHold seatHold = SeatHold.builder()
-            .holdToken(TokenGenerator.generateHoldToken())
-            .customerId(request.getCustomerId())
-            .event(seats.get(0).getEvent()) // All seats belong to same event
-            .seatIds(request.getSeatIds())
-            .expiresAt(expiresAt)
-            .status(SeatHold.HoldStatus.ACTIVE)
-            .build();
-
-        // 5. Update seat status to HELD
-        int updatedSeats = seatRepository.holdSeats(request.getSeatIds());
-        if (updatedSeats != request.getSeatIds().size()) {
-            throw new BookingException("Some seats became unavailable during booking process");
+    /**
+     * Helper method to release Redis locks
+     */
+    private void releaseLocks(List<String> lockKeys, String lockToken) {
+        for (String lockKey : lockKeys) {
+            try {
+                String storedToken = redisTemplate.opsForValue().get(lockKey);
+                if (lockToken.equals(storedToken)) {
+                    redisTemplate.delete(lockKey);
+                }
+            } catch (Exception e) {
+                log.error("Failed to release lock: {}", lockKey, e);
+            }
         }
-
-        // 6. Save hold to database
-        seatHold = seatHoldRepository.save(seatHold);
-
-        // 7. Cache the hold with TTL
-        SeatHoldDto holdDto = convertToDto(seatHold);
-        cacheService.cacheSeatHold(holdDto);
-
-        // 8. Publish event for audit trail
-        messagingService.publishSeatHoldCreated(holdDto, seats);
-
-        // 9. Calculate total amount
-        BigDecimal totalAmount = seats.stream()
-            .map(Seat::getPrice)
-            .reduce(BigDecimal.ZERO, BigDecimal::add);
-
-        String eventTitle = seats.get(0).getEvent().getTitle();
-
-        log.info("Seat hold created successfully: {} for customer: {} with {} seats",
-                seatHold.getHoldToken(), request.getCustomerId(), request.getSeatIds().size());
-
-        // Create response manually
-        SeatHoldResponse response = new SeatHoldResponse();
-        response.setHoldToken(holdDto.getHoldToken());
-        response.setCustomerId(holdDto.getCustomerId());
-        response.setEventId(holdDto.getEventId());
-        response.setEventTitle(eventTitle);
-        response.setSeatCount(holdDto.getSeatCount());
-        response.setTotalAmount(totalAmount);
-        response.setExpiresAt(holdDto.getExpiresAt());
-        response.setTimeRemainingSeconds(holdDto.getTimeRemainingSeconds());
-        response.setStatus(holdDto.getStatus());
-        response.setCreatedAt(holdDto.getCreatedAt());
-        response.setMessage("Seats held successfully. Complete payment within " +
-                (holdDto.getTimeRemainingSeconds() / 60) + " minutes.");
-
-        return response;
     }
 
     /**
@@ -137,8 +199,8 @@ public class BookingService {
     public BookingDto confirmBooking(BookingConfirmRequest request) {
         validateConfirmRequest(request);
 
-        // Get hold with lock
-        SeatHold seatHold = seatHoldRepository.findByHoldTokenWithLock(request.getHoldToken())
+        // Get hold (no database lock needed, we use Redis locks)
+        SeatHold seatHold = seatHoldRepository.findByHoldToken(request.getHoldToken())
             .orElseThrow(() -> new BookingNotFoundException("Seat hold not found: " + request.getHoldToken()));
 
         // Validate hold state
@@ -148,6 +210,17 @@ public class BookingService {
 
         if (!seatHold.getCustomerId().equals(request.getCustomerId())) {
             throw new BookingException("Invalid customer for this hold");
+        }
+
+        // Verify Redis locks are still held by this token
+        if (seatHold.getLockToken() != null) {
+            for (Long seatId : seatHold.getSeatIds()) {
+                String seatLockKey = "seat:lock:" + seatId;
+                String storedToken = redisTemplate.opsForValue().get(seatLockKey);
+                if (!seatHold.getLockToken().equals(storedToken)) {
+                    throw new BookingException("Seat hold expired or lock lost");
+                }
+            }
         }
 
         // Create booking
@@ -163,10 +236,11 @@ public class BookingService {
 
         booking.confirm(request.getPaymentId());
 
-        // Update seat status to BOOKED
+        // Update seat status to BOOKED with conditional check (WHERE status='HELD')
         int bookedSeats = seatRepository.bookSeats(seatHold.getSeatIds());
         if (bookedSeats != seatHold.getSeatIds().size()) {
-            throw new BookingException("Failed to confirm all seats");
+            // If affectedRows == 0, reject booking
+            throw new BookingException("Failed to confirm all seats - some seats may have been released");
         }
 
         // Update hold status
@@ -175,6 +249,22 @@ public class BookingService {
 
         // Save booking
         booking = bookingRepository.save(booking);
+
+        // Release Redis locks
+        if (seatHold.getLockToken() != null) {
+            for (Long seatId : seatHold.getSeatIds()) {
+                String seatLockKey = "seat:lock:" + seatId;
+                String storedToken = redisTemplate.opsForValue().get(seatLockKey);
+               if (seatHold.getLockToken().equals(storedToken)) {
+                    redisTemplate.delete(seatLockKey);
+                }
+            }
+        }
+
+        // Delete hold expiry notification key
+        String holdExpiryKey = "seat_hold:" + request.getHoldToken();
+        redisTemplate.delete(holdExpiryKey);
+        log.debug("Deleted expiry notification key: {}", holdExpiryKey);
 
         // Remove from cache
         cacheService.removeSeatHold(request.getHoldToken());
@@ -212,6 +302,22 @@ public class BookingService {
         // Update hold status
         seatHold.cancel();
         seatHoldRepository.save(seatHold);
+
+        // Release Redis locks
+        if (seatHold.getLockToken() != null) {
+            for (Long seatId : seatHold.getSeatIds()) {
+                String seatLockKey = "seat:lock:" + seatId;
+                String storedToken = redisTemplate.opsForValue().get(seatLockKey);
+                if (seatHold.getLockToken().equals(storedToken)) {
+                    redisTemplate.delete(seatLockKey);
+                }
+            }
+        }
+
+        // Delete hold expiry notification key
+        String holdExpiryKey = "seat_hold:" + holdToken;
+        redisTemplate.delete(holdExpiryKey);
+        log.debug("Deleted expiry notification key: {}", holdExpiryKey);
 
         // Remove from cache
         cacheService.removeSeatHold(holdToken);
@@ -255,9 +361,6 @@ public class BookingService {
             throw new BookingException("Cannot hold more than " + maxSeatsPerBooking + " seats at once");
         }
 
-        if (request.getHoldDurationMinutes() < 1 || request.getHoldDurationMinutes() > 30) {
-            throw new BookingException("Hold duration must be between 1 and 30 minutes");
-        }
     }
 
     private void validateSeatsForHold(List<Seat> seats, SeatHoldRequest request) {

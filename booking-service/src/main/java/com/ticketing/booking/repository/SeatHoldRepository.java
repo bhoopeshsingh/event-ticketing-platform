@@ -32,26 +32,28 @@ public interface SeatHoldRepository extends JpaRepository<SeatHold, Long> {
      * Find active holds for a customer
      */
     @Query("SELECT sh FROM SeatHold sh WHERE sh.customerId = :customerId " +
-           "AND sh.status = com.ticketing.common.entity.SeatHold.HoldStatus.ACTIVE " +
+           "AND sh.status = 'ACTIVE' " +
            "AND sh.expiresAt > :now")
     List<SeatHold> findActiveHoldsByCustomer(@Param("customerId") Long customerId,
                                            @Param("now") LocalDateTime now);
 
     /**
      * Find holds for specific seats that are still active
+     * Uses native query because PostgreSQL array overlap requires native syntax
      */
-    @Query("SELECT sh FROM SeatHold sh WHERE sh.event.id = :eventId " +
-           "AND sh.status = com.ticketing.common.entity.SeatHold.HoldStatus.ACTIVE " +
-           "AND sh.expiresAt > :now " +
-           "AND EXISTS (SELECT 1 FROM sh.seatIds si WHERE si IN :seatIds)")
+    @Query(value = "SELECT * FROM seat_holds sh WHERE sh.event_id = :eventId " +
+           "AND sh.status = 'ACTIVE' " +
+           "AND sh.expires_at > :now " +
+           "AND sh.seat_ids && CAST(:seatIds AS bigint[])", 
+           nativeQuery = true)
     List<SeatHold> findActiveHoldsForSeats(@Param("eventId") Long eventId,
-                                         @Param("seatIds") List<Long> seatIds,
-                                         @Param("now") LocalDateTime now);
+                                          @Param("seatIds") Long[] seatIds,
+                                          @Param("now") LocalDateTime now);
 
     /**
      * Find expired holds for cleanup
      */
-    @Query("SELECT sh FROM SeatHold sh WHERE sh.status = com.ticketing.common.entity.SeatHold.HoldStatus.ACTIVE " +
+    @Query("SELECT sh FROM SeatHold sh WHERE sh.status = 'ACTIVE' " +
            "AND sh.expiresAt <= :now")
     List<SeatHold> findExpiredHolds(@Param("now") LocalDateTime now);
 
@@ -59,8 +61,8 @@ public interface SeatHoldRepository extends JpaRepository<SeatHold, Long> {
      * Bulk update expired holds
      */
     @Modifying
-    @Query("UPDATE SeatHold sh SET sh.status = com.ticketing.common.entity.SeatHold.HoldStatus.EXPIRED " +
-           "WHERE sh.status = com.ticketing.common.entity.SeatHold.HoldStatus.ACTIVE " +
+    @Query("UPDATE SeatHold sh SET sh.status = 'EXPIRED' " +
+           "WHERE sh.status = 'ACTIVE' " +
            "AND sh.expiresAt <= :now")
     int markExpiredHolds(@Param("now") LocalDateTime now);
 
@@ -68,7 +70,7 @@ public interface SeatHoldRepository extends JpaRepository<SeatHold, Long> {
      * Count active holds for an event
      */
     @Query("SELECT COUNT(sh) FROM SeatHold sh WHERE sh.event.id = :eventId " +
-           "AND sh.status = com.ticketing.common.entity.SeatHold.HoldStatus.ACTIVE " +
+           "AND sh.status = 'ACTIVE' " +
            "AND sh.expiresAt > :now")
     long countActiveHoldsForEvent(@Param("eventId") Long eventId, @Param("now") LocalDateTime now);
 }
