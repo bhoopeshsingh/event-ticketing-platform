@@ -88,6 +88,7 @@ public class EventService {
             List<SeatDto> seatDtos = event.getSeats().stream()
                 .map(this::convertSeatToDto)
                 .toList();
+            eventDto.setSeats(seatDtos);
             eventDto.setPricingTiers(null); // Will be set separately
         }
 

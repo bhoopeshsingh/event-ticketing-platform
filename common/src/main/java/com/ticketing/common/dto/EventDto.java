@@ -61,6 +61,8 @@ public class EventDto implements Serializable {
 
     private List<PricingTierDto> pricingTiers;
 
+    private List<SeatDto> seats;
+
     @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss")
     private LocalDateTime createdAt;
 
