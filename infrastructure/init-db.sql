@@ -1,4 +1,4 @@
-p -- Event Ticketing Platform Database Initialization
+-- Event Ticketing Platform Database Initialization
 -- This script creates the necessary tables for the event ticketing system
 
 -- Enable UUID extension
@@ -108,10 +108,18 @@ CREATE INDEX idx_booking_payment ON bookings(payment_id);
 CREATE INDEX idx_booking_hold_token ON bookings(hold_token);
 
 -- Insert sample data for testing
-INSERT INTO events (title, description, category, city, venue, event_date, total_capacity, available_seats, base_price, status, organizer_id) VALUES
-('Rock Concert 2026', 'Amazing rock concert with international artists', 'Music', 'New York', 'Madison Square Garden', '2026-06-15 20:00:00', 1000, 1000, 150.00, 'PUBLISHED', 1),
-('Tech Conference 2026', 'Latest trends in technology and AI', 'Technology', 'San Francisco', 'Moscone Center', '2026-07-20 09:00:00', 500, 500, 299.00, 'PUBLISHED', 2),
-('Comedy Show', 'Stand-up comedy night with top comedians', 'Comedy', 'Los Angeles', 'Hollywood Bowl', '2026-08-10 19:30:00', 750, 750, 75.00, 'PUBLISHED', 3);
+-- Master data (matches README):
+-- - 3 events
+-- - 100 seats for Event #1
+-- - 3 pricing tiers total (for Event #1)
+INSERT INTO events (id, title, description, category, city, venue, event_date, total_capacity, available_seats, base_price, status, organizer_id) VALUES
+(1, 'Rock Concert 2026', 'Amazing rock concert with international artists', 'Music', 'New York', 'Madison Square Garden', '2026-06-15 20:00:00', 100, 100, 150.00, 'PUBLISHED', 1),
+(2, 'Tech Conference 2026', 'Latest trends in technology and AI', 'Technology', 'San Francisco', 'Moscone Center', '2026-07-20 09:00:00', 500, 500, 299.00, 'PUBLISHED', 2),
+(3, 'Comedy Show', 'Stand-up comedy night with top comedians', 'Comedy', 'Los Angeles', 'Hollywood Bowl', '2026-08-10 19:30:00', 750, 750, 75.00, 'PUBLISHED', 3)
+ON CONFLICT (id) DO NOTHING;
+
+-- Keep identity sequence in sync (in case ids were inserted explicitly)
+SELECT setval(pg_get_serial_sequence('events', 'id'), (SELECT COALESCE(MAX(id), 1) FROM events), true);
 
 -- Insert sample seats for the first event
 INSERT INTO seats (event_id, section, row_letter, seat_number, price, status, seat_identifier)
@@ -135,17 +143,14 @@ SELECT
         WHEN (generate_series % 100) < 60 THEN 'Premium'
         ELSE 'Regular'
     END || '-' || CHR(65 + (generate_series / 20)) || ((generate_series % 20) + 1) as seat_identifier
-FROM generate_series(0, 999);
+FROM generate_series(0, 99)
+ON CONFLICT DO NOTHING;
 
 -- Insert pricing tiers for events
 INSERT INTO pricing_tiers (event_id, name, description, price, max_quantity, available_quantity) VALUES
-(1, 'VIP', 'VIP seats with exclusive access', 300.00, 200, 200),
-(1, 'Premium', 'Premium seats with great view', 200.00, 400, 400),
-(1, 'Regular', 'Regular seats', 150.00, 400, 400),
-(2, 'Early Bird', 'Early bird pricing', 199.00, 100, 100),
-(2, 'Regular', 'Regular conference ticket', 299.00, 400, 400),
-(3, 'Front Row', 'Front row seats', 125.00, 50, 50),
-(3, 'General', 'General admission', 75.00, 700, 700);
+(1, 'VIP', 'VIP seats with exclusive access', 300.00, 20, 20),
+(1, 'Premium', 'Premium seats with great view', 200.00, 40, 40),
+(1, 'Regular', 'Regular seats', 150.00, 40, 40);
 
 -- Create function to update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_updated_at_column()

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ticketing.booking.repository.SeatHoldRepository;
 import com.ticketing.booking.repository.SeatRepository;
 import com.ticketing.common.entity.SeatHold;
+import com.ticketing.common.service.SeatStatusCacheService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -33,6 +34,7 @@ public class SeatStateConsumer {
     private final SeatHoldRepository seatHoldRepository;
     private final EventMessagingService messagingService;
     private final ObjectMapper objectMapper;
+    private final SeatStatusCacheService seatStatusCacheService;
 
     @Transactional
     @KafkaListener(
@@ -72,6 +74,9 @@ public class SeatStateConsumer {
             log.debug("Seat {} already released or booked, skipping", seatId);
             return;
         }
+
+        // Cache seat status transition: HELD → AVAILABLE
+        seatStatusCacheService.transitionSeatStatus(eventId, seatId, "HELD", "AVAILABLE");
 
         // Find the active hold that references this seat and mark it expired
         List<SeatHold> activeHolds = seatHoldRepository.findExpiredHoldsForSeat(eventId, seatId, LocalDateTime.now());

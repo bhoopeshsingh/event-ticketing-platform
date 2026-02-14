@@ -45,6 +45,9 @@ class BookingServiceTest {
     private StringRedisTemplate redisTemplate;
 
     @Mock
+    private com.ticketing.common.service.SeatStatusCacheService seatStatusCacheService;
+
+    @Mock
     private ValueOperations<String, String> valueOperations;
 
     private BookingService bookingService;
@@ -59,7 +62,8 @@ class BookingServiceTest {
             seatHoldRepository,
             bookingRepository,
             messagingService,
-            redisTemplate
+            redisTemplate,
+            seatStatusCacheService
         );
 
         try {

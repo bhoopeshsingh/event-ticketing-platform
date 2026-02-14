@@ -5,6 +5,7 @@ import com.ticketing.common.dto.SeatDto;
 import com.ticketing.common.entity.Event;
 import com.ticketing.common.entity.Seat;
 import com.ticketing.common.enums.EventStatus;
+import com.ticketing.common.service.SeatStatusCacheService;
 import com.ticketing.event.repository.EventRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -18,6 +19,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 @Service
@@ -26,6 +28,7 @@ import java.util.Optional;
 public class EventService {
 
     private final EventRepository eventRepository;
+    private final SeatStatusCacheService seatStatusCacheService;
 
     /**
      * Search events with multiple filters - core read scenario
@@ -64,9 +67,9 @@ public class EventService {
     }
 
     /**
-     * Get event with seat layout - for booking flow
+     * Get event with seat layout - for booking flow.
+     * Merges DB seat data with Redis recent changes for real-time status.
      */
-    @Cacheable(value = "event_with_seats", key = "#eventId")
     @Transactional(readOnly = true)
     public Optional<EventDto> getEventWithSeats(Long eventId) {
         log.debug("Fetching event with seats for ID: {}", eventId);
@@ -85,11 +88,25 @@ public class EventService {
 
         EventDto eventDto = convertToDto(event);
 
-        // Add seat information
+        // Add seat information with real-time Redis overlay
         if (event.getSeats() != null && !event.getSeats().isEmpty()) {
             log.debug("Converting {} seats to DTOs for event: {}", event.getSeats().size(), eventId);
+            
+            // Get recent status changes from Redis (sliding window: last 2 minutes)
+            Map<Long, String> recentChanges = seatStatusCacheService.getRecentChanges(eventId);
+            log.debug("Found {} recent seat status changes in Redis for event: {}", recentChanges.size(), eventId);
+            
             List<SeatDto> seatDtos = event.getSeats().stream()
-                .map(this::convertSeatToDto)
+                .map(seat -> {
+                    SeatDto dto = convertSeatToDto(seat);
+                    // Override DB status with Redis if available (real-time)
+                    String recentStatus = recentChanges.get(seat.getId());
+                    if (recentStatus != null) {
+                        dto.setStatus(recentStatus);
+                        log.trace("Seat {} status overridden from Redis: {}", seat.getId(), recentStatus);
+                    }
+                    return dto;
+                })
                 .toList();
             eventDto.setSeats(seatDtos);
         }

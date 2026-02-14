@@ -31,25 +31,22 @@ spring:
     show-sql: ${SHOW_SQL:false}
 
   # Redis Configuration for Caching
+  # Used for:
+  # 1. Real-time seat status merge (reads from sliding window cache)
+  # 2. Event/listing caching (future enhancement)
+  # CRITICAL: Must use same database as booking-service for real-time status overlay
   data:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
-      database: ${REDIS_DB:1}
+      database: ${REDIS_DB:0}
       timeout: 2s
       lettuce:
         pool:
           max-active: 8
           max-idle: 8
           min-idle: 0
-
-  # Cache Configuration
-  cache:
-    type: redis
-    redis:
-      time-to-live: 300000  # 5 minutes default TTL
-      cache-null-values: false
 
 # Server Configuration
 server:
@@ -79,18 +76,6 @@ springdoc:
     tagsSorter: alpha
     displayRequestDuration: true
   show-actuator: false
-
-
-# Custom cache TTLs
-cache:
-  ttl:
-    events: 300          # 5 minutes
-    event-details: 600   # 10 minutes
-    event-with-seats: 60 # 1 minute (more dynamic)
-    popular-events: 600  # 10 minutes
-    upcoming-events: 300 # 5 minutes
-    active-cities: 3600  # 1 hour
-    active-categories: 3600 # 1 hour
 
 # Logging
 logging:

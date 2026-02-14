@@ -5,6 +5,7 @@ import com.ticketing.booking.repository.SeatHoldRepository;
 import com.ticketing.booking.repository.SeatRepository;
 import com.ticketing.common.dto.*;
 import com.ticketing.common.entity.*;
+import com.ticketing.common.service.SeatStatusCacheService;
 import com.ticketing.common.util.TokenGenerator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,6 +33,7 @@ public class BookingService {
     private final BookingRepository bookingRepository;
     private final EventMessagingService messagingService;
     private final StringRedisTemplate redisTemplate;
+    private final SeatStatusCacheService seatStatusCacheService;
 
     @Value("${booking.hold.duration.minutes:10}")
     private int defaultHoldDurationMinutes;
@@ -128,11 +130,14 @@ public class BookingService {
 
             seatHold = seatHoldRepository.save(seatHold);
 
-            // 5. Publish audit event
+            // 5. Cache seat status change: AVAILABLE → HELD
+            seatStatusCacheService.cacheSeatStatusChanges(eventId, request.getSeatIds(), "HELD");
+
+            // 6. Publish audit event
             SeatHoldDto holdDto = convertToDto(seatHold);
             messagingService.publishSeatHoldCreated(holdDto, seats);
 
-            // 6. Build response
+            // 7. Build response
             BigDecimal totalAmount = seats.stream()
                 .map(Seat::getPrice)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -229,6 +234,9 @@ public class BookingService {
         seatHoldRepository.save(seatHold);
         booking = bookingRepository.save(booking);
 
+        // Cache seat status transition: HELD → BOOKED
+        seatStatusCacheService.transitionSeatStatuses(eventId, seatHold.getSeatIds(), "HELD", "BOOKED");
+
         // Delete Redis keys (seat is now permanently BOOKED in DB)
         List<String> keysToDelete = seatHold.getSeatIds().stream()
             .map(seatId -> seatHoldKey(eventId, seatId))
@@ -270,6 +278,9 @@ public class BookingService {
 
         seatHold.cancel();
         seatHoldRepository.save(seatHold);
+
+        // Cache seat status transition: HELD → AVAILABLE
+        seatStatusCacheService.transitionSeatStatuses(eventId, seatHold.getSeatIds(), "HELD", "AVAILABLE");
 
         // Delete Redis keys
         List<String> keysToDelete = seatHold.getSeatIds().stream()

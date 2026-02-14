@@ -4,10 +4,12 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.autoconfigure.domain.EntityScan;
 import org.springframework.cache.annotation.EnableCaching;
+import org.springframework.context.annotation.ComponentScan;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
 
 @SpringBootApplication
+@ComponentScan(basePackages = {"com.ticketing.event", "com.ticketing.common.service"})
 @EnableJpaRepositories(basePackages = {"com.ticketing.event.repository"})
 @EntityScan(basePackages = {"com.ticketing.common.entity", "com.ticketing.event.entity"})
 @EnableTransactionManagement

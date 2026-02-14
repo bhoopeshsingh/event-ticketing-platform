@@ -35,6 +35,10 @@ spring:
     show-sql: ${SHOW_SQL:false}
 
   # Redis Configuration
+  # Used for:
+  # 1. Distributed seat locking (SET NX EX pattern)
+  # 2. Real-time seat status cache (ZSET sliding window, 2-min TTL)
+  # 3. TTL-based seat hold expiry (keyspace notifications)
   data:
     redis:
       host: ${REDIS_HOST:localhost}
@@ -108,10 +112,6 @@ booking:
     seats:
       per:
         booking: ${MAX_SEATS_PER_BOOKING:10}
-    concurrent:
-      holds:
-        per:
-          customer: ${MAX_CONCURRENT_HOLDS:3}
 
 # Kafka Topics
 kafka:
@@ -125,33 +125,6 @@ kafka:
     
   consumer:
     group-id: ${KAFKA_CONSUMER_GROUP:booking-service-seat-state}
-
-# Resilience Configuration
-resilience4j:
-  circuitbreaker:
-    instances:
-      payment-service:
-        registerHealthIndicator: true
-        slidingWindowSize: 10
-        minimumNumberOfCalls: 5
-        permittedNumberOfCallsInHalfOpenState: 3
-        waitDurationInOpenState: 30s
-        failureRateThreshold: 50
-        recordExceptions:
-          - java.net.ConnectException
-          - java.net.SocketTimeoutException
-  retry:
-    instances:
-      payment-service:
-        maxAttempts: 3
-        waitDuration: 1s
-        retryExceptions:
-          - java.net.ConnectException
-          - java.net.SocketTimeoutException
-  timelimiter:
-    instances:
-      payment-service:
-        timeoutDuration: 10s
 
 # Logging
 logging:
