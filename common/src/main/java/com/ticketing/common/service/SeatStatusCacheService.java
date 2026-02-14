@@ -24,12 +24,12 @@ public class SeatStatusCacheService {
     private final StringRedisTemplate redisTemplate;
 
     private static final String RECENT_CHANGES_PREFIX = "%d:recent_changes:";
-    private static final Duration CACHE_TTL = Duration.ofSeconds(120);
-    private static final long SLIDING_WINDOW_SECONDS = 120;
+    private static final Duration CACHE_TTL = Duration.ofSeconds(600);
+    private static final long SLIDING_WINDOW_SECONDS = 600;
 
     /**
      * Cache seat status change with timestamp-based sliding window.
-     * Automatically prunes entries older than 2 minutes.
+     * Automatically prunes entries older than 10 minutes.
      */
     public void cacheSeatStatusChange(Long eventId, Long seatId, String newStatus) {
         try {
