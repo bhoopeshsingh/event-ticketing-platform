@@ -1,5 +1,6 @@
 package com.ticketing.booking.service;
 
+import com.ticketing.booking.repository.BookingRepository;
 import com.ticketing.booking.repository.SeatHoldRepository;
 import com.ticketing.booking.repository.SeatRepository;
 import com.ticketing.common.dto.SeatHoldRequest;
@@ -13,8 +14,10 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -33,16 +36,16 @@ class BookingServiceTest {
     private SeatHoldRepository seatHoldRepository;
 
     @Mock
-    private DistributedLockService lockService;
-
-    @Mock
-    private SeatHoldCacheService cacheService;
+    private BookingRepository bookingRepository;
 
     @Mock
     private EventMessagingService messagingService;
 
     @Mock
     private StringRedisTemplate redisTemplate;
+
+    @Mock
+    private ValueOperations<String, String> valueOperations;
 
     private BookingService bookingService;
 
@@ -51,22 +54,14 @@ class BookingServiceTest {
 
     @BeforeEach
     void setUp() {
-        // Use real bookingService with mocks
         bookingService = new BookingService(
             seatRepository,
             seatHoldRepository,
-            null, // bookingRepository not needed for these tests
-            lockService,
-            cacheService,
+            bookingRepository,
             messagingService,
             redisTemplate
         );
 
-        // Reflection or setter could be used for @Value fields if needed, 
-        // but default values might suffice or constructor injection if possible.
-        // For now, relying on default values or if they are field injected, we need a way to set them.
-        // Since they are @Value annotated fields, we might need a workaround for pure unit test without Spring context.
-        // A common pattern is to make them package-private and set them, or use ReflectionTestUtils.
         try {
             java.lang.reflect.Field durationField = BookingService.class.getDeclaredField("defaultHoldDurationMinutes");
             durationField.setAccessible(true);
@@ -79,7 +74,6 @@ class BookingServiceTest {
             throw new RuntimeException("Failed to set @Value fields", e);
         }
 
-        // Create test data
         testEvent = Event.builder()
             .id(1L)
             .title("Test Event")
@@ -110,30 +104,21 @@ class BookingServiceTest {
 
     @Test
     void holdSeats_Success() {
-        // Arrange
         SeatHoldRequest request = SeatHoldRequest.builder()
             .customerId(1L)
             .eventId(1L)
             .seatIds(List.of(1L, 2L))
             .build();
 
-        when(lockService.executeWithLock(anyString(), any(), any()))
-            .thenAnswer(invocation -> {
-                DistributedLockService.DistributedTask<?> task = invocation.getArgument(2);
-                return task.execute();
-            });
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.setIfAbsent(anyString(), anyString(), any(Duration.class)))
+            .thenReturn(true);
 
-        when(seatRepository.findByIdInWithLock(request.getSeatIds()))
-            .thenReturn(testSeats);
-
-        when(cacheService.areSeatsHeld(request.getSeatIds()))
-            .thenReturn(false);
-
-        when(seatHoldRepository.findActiveHoldsForSeats(anyLong(), any(Long[].class), any()))
-            .thenReturn(List.of());
-
-        when(seatRepository.holdSeats(request.getSeatIds()))
+        when(seatRepository.holdSeatsGuarded(request.getSeatIds()))
             .thenReturn(2);
+
+        when(seatRepository.findByIdIn(request.getSeatIds()))
+            .thenReturn(testSeats);
 
         when(seatHoldRepository.save(any(SeatHold.class)))
             .thenAnswer(invocation -> {
@@ -143,10 +128,8 @@ class BookingServiceTest {
                 return hold;
             });
 
-        // Act
         SeatHoldResponse response = bookingService.holdSeats(request);
 
-        // Assert
         assertNotNull(response);
         assertEquals(1L, response.getCustomerId());
         assertEquals(1L, response.getEventId());
@@ -154,79 +137,84 @@ class BookingServiceTest {
         assertEquals(new BigDecimal("200.00"), response.getTotalAmount());
         assertNotNull(response.getHoldToken());
 
-        // Verify interactions
-        verify(lockService).executeWithLock(anyString(), any(), any());
-        verify(seatRepository).findByIdInWithLock(request.getSeatIds());
-        verify(cacheService).areSeatsHeld(request.getSeatIds());
-        verify(seatRepository).holdSeats(request.getSeatIds());
+        verify(seatRepository).holdSeatsGuarded(request.getSeatIds());
         verify(seatHoldRepository).save(any(SeatHold.class));
-        verify(cacheService).cacheSeatHold(any());
         verify(messagingService).publishSeatHoldCreated(any(), any());
     }
 
     @Test
-    void holdSeats_SeatsAlreadyHeld_ThrowsException() {
-        // Arrange
+    void holdSeats_SeatAlreadyHeldInRedis_ThrowsException() {
         SeatHoldRequest request = SeatHoldRequest.builder()
             .customerId(1L)
             .eventId(1L)
             .seatIds(List.of(1L, 2L))
             .build();
 
-        when(lockService.executeWithLock(anyString(), any(), any()))
-            .thenAnswer(invocation -> {
-                DistributedLockService.DistributedTask<?> task = invocation.getArgument(2);
-                return task.execute();
-            });
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        // First seat succeeds, second fails (already held)
+        when(valueOperations.setIfAbsent(eq("seat:1:1:HELD"), anyString(), any(Duration.class)))
+            .thenReturn(true);
+        when(valueOperations.setIfAbsent(eq("seat:1:2:HELD"), anyString(), any(Duration.class)))
+            .thenReturn(false);
 
-        when(seatRepository.findByIdInWithLock(request.getSeatIds()))
-            .thenReturn(testSeats);
-
-        when(cacheService.areSeatsHeld(request.getSeatIds()))
-            .thenReturn(true); // Seats are held in cache
-
-        // Act & Assert
         BookingException exception = assertThrows(
             BookingException.class,
             () -> bookingService.holdSeats(request)
         );
 
         assertTrue(exception.getMessage().contains("held by another customer"));
-
-        // Verify that no seats were actually held
-        verify(seatRepository, never()).holdSeats(any());
+        verify(seatRepository, never()).holdSeatsGuarded(any());
         verify(seatHoldRepository, never()).save(any());
     }
 
     @Test
-    void getSeatHold_FromCache() {
-        // Arrange
-        String holdToken = "HOLD_123";
-        when(cacheService.getSeatHold(holdToken))
-            .thenReturn(Optional.of(createTestSeatHoldDto()));
-
-        // Act
-        Optional<com.ticketing.common.dto.SeatHoldDto> result = bookingService.getSeatHold(holdToken);
-
-        // Assert
-        assertTrue(result.isPresent());
-        assertEquals(holdToken, result.get().getHoldToken());
-
-        // Verify cache was checked first
-        verify(cacheService).getSeatHold(holdToken);
-        verify(seatHoldRepository, never()).findByHoldToken(holdToken);
-    }
-
-    private com.ticketing.common.dto.SeatHoldDto createTestSeatHoldDto() {
-        return com.ticketing.common.dto.SeatHoldDto.builder()
-            .id(1L)
-            .holdToken("HOLD_123")
+    void holdSeats_SeatBookedInDB_ThrowsException() {
+        SeatHoldRequest request = SeatHoldRequest.builder()
             .customerId(1L)
             .eventId(1L)
             .seatIds(List.of(1L, 2L))
-            .expiresAt(LocalDateTime.now().plusMinutes(10))
-            .status("ACTIVE")
-            .createdAt(LocalDateTime.now())
             .build();
+
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.setIfAbsent(anyString(), anyString(), any(Duration.class)))
+            .thenReturn(true);
+
+        // DB guard: one seat is BOOKED, so only 1 row updated instead of 2
+        when(seatRepository.holdSeatsGuarded(request.getSeatIds()))
+            .thenReturn(1);
+
+        BookingException exception = assertThrows(
+            BookingException.class,
+            () -> bookingService.holdSeats(request)
+        );
+
+        assertTrue(exception.getMessage().contains("no longer available"));
+        verify(seatHoldRepository, never()).save(any());
     }
+
+    @Test
+    void getSeatHold_FromDatabase() {
+        String holdToken = "HOLD_123";
+
+        SeatHold seatHold = SeatHold.builder()
+            .id(1L)
+            .holdToken(holdToken)
+            .customerId(1L)
+            .event(testEvent)
+            .seatIds(List.of(1L, 2L))
+            .expiresAt(LocalDateTime.now().plusMinutes(10))
+            .status(SeatHold.HoldStatus.ACTIVE)
+            .build();
+        seatHold.setCreatedAt(LocalDateTime.now());
+
+        when(seatHoldRepository.findByHoldToken(holdToken))
+            .thenReturn(Optional.of(seatHold));
+
+        Optional<com.ticketing.common.dto.SeatHoldDto> result = bookingService.getSeatHold(holdToken);
+
+        assertTrue(result.isPresent());
+        assertEquals(holdToken, result.get().getHoldToken());
+        verify(seatHoldRepository).findByHoldToken(holdToken);
+    }
+
 }

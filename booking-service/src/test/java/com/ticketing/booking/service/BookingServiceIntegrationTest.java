@@ -11,7 +11,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,8 +20,6 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.when;
 
 @SpringBootTest(properties = {
     "spring.datasource.url=jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1",
@@ -44,12 +41,6 @@ class BookingServiceIntegrationTest {
 
     @Autowired
     private SeatHoldRepository seatHoldRepository;
-
-    @org.springframework.boot.test.mock.mockito.MockBean
-    private DistributedLockService lockService;
-
-    @org.springframework.boot.test.mock.mockito.MockBean
-    private SeatHoldCacheService cacheService;
 
     @org.springframework.boot.test.mock.mockito.MockBean
     private EventMessagingService messagingService;
@@ -78,16 +69,6 @@ class BookingServiceIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        // Mock lock service to always succeed
-        when(lockService.executeWithLock(anyString(), any(), any()))
-            .thenAnswer(invocation -> {
-                DistributedLockService.DistributedTask<?> task = invocation.getArgument(2);
-                return task.execute();
-            });
-
-        // Mock cache to clear
-        when(cacheService.areSeatsHeld(anyList())).thenReturn(false);
-
         // Prepare Database Data
         
         // 1. Create Event

@@ -73,4 +73,17 @@ public interface SeatHoldRepository extends JpaRepository<SeatHold, Long> {
            "AND sh.status = 'ACTIVE' " +
            "AND sh.expiresAt > :now")
     long countActiveHoldsForEvent(@Param("eventId") Long eventId, @Param("now") LocalDateTime now);
+
+    /**
+     * Find active holds that contain a specific seat and have expired.
+     * Used by SeatStateConsumer when processing TTL expiry events.
+     */
+    @Query(value = "SELECT * FROM seat_holds sh WHERE sh.event_id = :eventId " +
+           "AND sh.status = 'ACTIVE' " +
+           "AND sh.expires_at <= :now " +
+           "AND :seatId = ANY(sh.seat_ids)",
+           nativeQuery = true)
+    List<SeatHold> findExpiredHoldsForSeat(@Param("eventId") Long eventId,
+                                           @Param("seatId") Long seatId,
+                                           @Param("now") LocalDateTime now);
 }

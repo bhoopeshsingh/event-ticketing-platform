@@ -100,10 +100,10 @@ springdoc:
 booking:
   hold:
     duration:
-      minutes: ${HOLD_DURATION_MINUTES:2}
+      minutes: ${HOLD_DURATION_MINUTES:5}
     cleanup:
       interval:
-        minutes: ${CLEANUP_INTERVAL_MINUTES:20}
+        minutes: ${CLEANUP_INTERVAL_MINUTES:10}
   max:
     seats:
       per:
@@ -117,10 +117,14 @@ booking:
 kafka:
   topics:
     seat-hold-created: ${KAFKA_TOPIC_SEAT_HOLD_CREATED:seat-hold-created}
+    seat-state-transitions: ${KAFKA_TOPIC_SEAT_STATE_TRANSITIONS:seat-state-transitions}
     seat-hold-confirmed: ${KAFKA_TOPIC_SEAT_HOLD_CONFIRMED:seat-hold-confirmed}
     seat-hold-cancelled: ${KAFKA_TOPIC_SEAT_HOLD_CANCELLED:seat-hold-cancelled}
     seat-hold-expired: ${KAFKA_TOPIC_SEAT_HOLD_EXPIRED:seat-hold-expired}
     booking-confirmed: ${KAFKA_TOPIC_BOOKING_CONFIRMED:booking-confirmed}
+    
+  consumer:
+    group-id: ${KAFKA_CONSUMER_GROUP:booking-service-seat-state}
 
 # Resilience Configuration
 resilience4j:

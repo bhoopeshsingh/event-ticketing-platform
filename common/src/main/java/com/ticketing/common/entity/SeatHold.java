@@ -29,11 +29,7 @@ public class SeatHold {
     @NotBlank
     @Size(max = 100)
     @Column(name = "hold_token", nullable = false, unique = true)
-    private String holdToken; // UUID for external reference
-
-    @Size(max = 100)
-    @Column(name = "lock_token")
-    private String lockToken; // Redis distributed lock token for pessimistic-free booking confirmation
+    private String holdToken;
 
     @NotNull
     @Column(name = "customer_id", nullable = false)

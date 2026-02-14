@@ -30,7 +30,7 @@ public class BookingController {
     @PostMapping("/hold")
     @Operation(
         summary = "Hold seats for booking",
-        description = "Reserve specific seats with time-bound hold (default 10 minutes). " +
+        description = "Reserve specific seats with time-bound hold (booking.hold.duration.minutes). " +
                      "This is the core write operation that implements distributed locking " +
                      "and prevents double-booking through Redis TTL mechanism."
     )

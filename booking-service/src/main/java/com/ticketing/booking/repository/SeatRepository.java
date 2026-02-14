@@ -53,12 +53,23 @@ public interface SeatRepository extends JpaRepository<Seat, Long> {
     boolean areAllSeatsAvailable(@Param("seatIds") List<Long> seatIds, @Param("expectedCount") long expectedCount);
 
     /**
-     * Update seat status to HELD
+     * Update seat status to HELD (legacy - only from AVAILABLE)
      */
     @Modifying
     @Query("UPDATE Seat s SET s.status = 'HELD' " +
            "WHERE s.id IN :seatIds AND s.status = 'AVAILABLE'")
     int holdSeats(@Param("seatIds") List<Long> seatIds);
+
+    /**
+     * Update seat status to HELD with DB guard.
+     * Allows transition from any state except BOOKED.
+     * Redis SET NX prevents concurrent holds; this guard catches permanently sold seats
+     * and handles the Kafka-lag window where an expired hold hasn't been cleaned up in DB yet.
+     */
+    @Modifying
+    @Query("UPDATE Seat s SET s.status = 'HELD' " +
+           "WHERE s.id IN :seatIds AND s.status <> 'BOOKED'")
+    int holdSeatsGuarded(@Param("seatIds") List<Long> seatIds);
 
     /**
      * Update seat status to BOOKED with conditional check

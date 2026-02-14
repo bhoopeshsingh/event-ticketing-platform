@@ -73,24 +73,28 @@ public class EventService {
 
         Optional<Event> eventOpt = eventRepository.findByIdWithSeats(eventId);
         if (eventOpt.isEmpty()) {
+            log.debug("Event not found: {}", eventId);
             return Optional.empty();
         }
 
         Event event = eventOpt.get();
         if (event.getStatus() != EventStatus.PUBLISHED) {
+            log.debug("Event not published: {} status: {}", eventId, event.getStatus());
             return Optional.empty();
         }
 
         EventDto eventDto = convertToDto(event);
 
         // Add seat information
-        if (event.getSeats() != null) {
+        if (event.getSeats() != null && !event.getSeats().isEmpty()) {
+            log.debug("Converting {} seats to DTOs for event: {}", event.getSeats().size(), eventId);
             List<SeatDto> seatDtos = event.getSeats().stream()
                 .map(this::convertSeatToDto)
                 .toList();
             eventDto.setSeats(seatDtos);
-            eventDto.setPricingTiers(null); // Will be set separately
         }
+        
+        eventDto.setPricingTiers(null); // Will be set separately
 
         return Optional.of(eventDto);
     }
