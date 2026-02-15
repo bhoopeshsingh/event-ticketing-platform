@@ -14,6 +14,8 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -130,12 +132,26 @@ public class BookingService {
 
             seatHold = seatHoldRepository.save(seatHold);
 
-            // 5. Cache seat status change: AVAILABLE → HELD
-            seatStatusCacheService.cacheSeatStatusChanges(eventId, request.getSeatIds(), "HELD");
-
-            // 6. Publish audit event
+            // 5. Build response (prepare DTOs before afterCommit to avoid lazy-load issues)
             SeatHoldDto holdDto = convertToDto(seatHold);
-            messagingService.publishSeatHoldCreated(holdDto, seats);
+            List<Seat> seatsCopy = List.copyOf(seats);
+            List<Long> seatIdsCopy = List.copyOf(request.getSeatIds());
+
+            // 6. Redis HASH + Kafka side-effects after DB transaction completes
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCompletion(int status) {
+                    if (status == STATUS_COMMITTED) {
+                        // DB commit succeeded: seats are HELD
+                        seatStatusCacheService.cacheSeatStatusChanges(eventId, seatIdsCopy, "HELD");
+                        messagingService.publishSeatHoldCreated(holdDto, seatsCopy);
+                    } else {
+                        // DB rolled back: seats remain AVAILABLE — re-affirm in HASH
+                        seatStatusCacheService.cacheSeatStatusChanges(eventId, seatIdsCopy, "AVAILABLE");
+                        log.warn("Seat hold rolled back for event={}, re-affirmed AVAILABLE in Redis HASH", eventId);
+                    }
+                }
+            });
 
             // 7. Build response
             BigDecimal totalAmount = seats.stream()
@@ -202,14 +218,9 @@ public class BookingService {
         Long eventId = seatHold.getEvent().getId();
         String expectedValue = seatHoldValue(seatHold.getCustomerId(), seatHold.getHoldToken());
 
-        // Verify Redis locks are still held for each seat
-        for (Long seatId : seatHold.getSeatIds()) {
-            String key = seatHoldKey(eventId, seatId);
-            String storedValue = redisTemplate.opsForValue().get(key);
-            if (!expectedValue.equals(storedValue)) {
-                throw new BookingException("Seat hold has expired. Please try again.");
-            }
-        }
+        // DB is the source of truth for confirmation.
+        // Bookings succeed even when Redis restarts and hold keys are lost.
+        // Guards: (1) seatHold.isActive() above, (2) bookSeats WHERE status='HELD' below.
 
         // Create booking
         Booking booking = Booking.builder()
@@ -234,23 +245,38 @@ public class BookingService {
         seatHoldRepository.save(seatHold);
         booking = bookingRepository.save(booking);
 
-        // Cache seat status transition: HELD → BOOKED
-        seatStatusCacheService.transitionSeatStatuses(eventId, seatHold.getSeatIds(), "HELD", "BOOKED");
-
-        // Delete Redis keys (seat is now permanently BOOKED in DB)
-        List<String> keysToDelete = seatHold.getSeatIds().stream()
+        // Prepare DTOs before afterCommit to avoid lazy-load issues
+        BookingDto bookingDto = convertToDto(booking);
+        SeatHoldDto holdDto = convertToDto(seatHold);
+        List<Long> seatIdsCopy = List.copyOf(seatHold.getSeatIds());
+        List<String> keysToDelete = seatIdsCopy.stream()
             .map(seatId -> seatHoldKey(eventId, seatId))
             .toList();
-        releaseRedisKeys(keysToDelete, expectedValue);
 
-        // Publish audit events
-        messagingService.publishBookingConfirmed(convertToDto(booking));
-        messagingService.publishSeatHoldConfirmed(convertToDto(seatHold));
+        // Redis HASH + Kafka side-effects after DB transaction completes
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status == STATUS_COMMITTED) {
+                    // DB commit succeeded: seats are BOOKED
+                    seatStatusCacheService.cacheSeatStatusChanges(eventId, seatIdsCopy, "BOOKED");
+                    releaseRedisKeys(keysToDelete, expectedValue);
+                    messagingService.publishBookingConfirmed(bookingDto);
+                    messagingService.publishSeatHoldConfirmed(holdDto);
+                } else {
+                    // DB rolled back: seats remain HELD — re-affirm in HASH
+                    // (handles Redis restart where HASH may have lost HELD entries)
+                    seatStatusCacheService.cacheSeatStatusChanges(eventId, seatIdsCopy, "HELD");
+                    log.warn("Booking confirmation rolled back for hold={}, re-affirmed HELD in Redis HASH",
+                            request.getHoldToken());
+                }
+            }
+        });
 
         log.info("Booking confirmed: ref={} hold={} customer={}",
-                booking.getBookingReference(), request.getHoldToken(), request.getCustomerId());
+                bookingDto.getBookingReference(), request.getHoldToken(), request.getCustomerId());
 
-        return convertToDto(booking);
+        return bookingDto;
     }
 
     /**
@@ -279,16 +305,30 @@ public class BookingService {
         seatHold.cancel();
         seatHoldRepository.save(seatHold);
 
-        // Cache seat status transition: HELD → AVAILABLE
-        seatStatusCacheService.transitionSeatStatuses(eventId, seatHold.getSeatIds(), "HELD", "AVAILABLE");
-
-        // Delete Redis keys
-        List<String> keysToDelete = seatHold.getSeatIds().stream()
+        // Prepare before afterCommit to avoid lazy-load issues
+        SeatHoldDto holdDto = convertToDto(seatHold);
+        List<Long> seatIdsCopy = List.copyOf(seatHold.getSeatIds());
+        List<String> keysToDelete = seatIdsCopy.stream()
             .map(seatId -> seatHoldKey(eventId, seatId))
             .toList();
-        releaseRedisKeys(keysToDelete, expectedValue);
 
-        messagingService.publishSeatHoldCancelled(convertToDto(seatHold));
+        // Redis HASH + Kafka side-effects after DB transaction completes
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status == STATUS_COMMITTED) {
+                    // DB commit succeeded: seats are AVAILABLE
+                    seatStatusCacheService.cacheSeatStatusChanges(eventId, seatIdsCopy, "AVAILABLE");
+                    releaseRedisKeys(keysToDelete, expectedValue);
+                    messagingService.publishSeatHoldCancelled(holdDto);
+                } else {
+                    // DB rolled back: seats remain HELD — re-affirm in HASH
+                    seatStatusCacheService.cacheSeatStatusChanges(eventId, seatIdsCopy, "HELD");
+                    log.warn("Seat hold cancellation rolled back for hold={}, re-affirmed HELD in Redis HASH",
+                            holdToken);
+                }
+            }
+        });
 
         log.info("Seat hold cancelled: {} by customer: {}", holdToken, customerId);
     }

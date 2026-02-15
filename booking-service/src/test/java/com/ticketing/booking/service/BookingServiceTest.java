@@ -8,6 +8,7 @@ import com.ticketing.common.dto.SeatHoldResponse;
 import com.ticketing.common.entity.Event;
 import com.ticketing.common.entity.Seat;
 import com.ticketing.common.entity.SeatHold;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -15,6 +16,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -57,6 +60,9 @@ class BookingServiceTest {
 
     @BeforeEach
     void setUp() {
+        // Activate transaction synchronization so afterCommit callbacks can register
+        TransactionSynchronizationManager.initSynchronization();
+
         bookingService = new BookingService(
             seatRepository,
             seatHoldRepository,
@@ -106,6 +112,13 @@ class BookingServiceTest {
         );
     }
 
+    @AfterEach
+    void tearDown() {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
     @Test
     void holdSeats_Success() {
         SeatHoldRequest request = SeatHoldRequest.builder()
@@ -143,6 +156,13 @@ class BookingServiceTest {
 
         verify(seatRepository).holdSeatsGuarded(request.getSeatIds());
         verify(seatHoldRepository).save(any(SeatHold.class));
+
+        // Redis + Kafka side-effects are deferred to afterCompletion.
+        // In unit tests (no real TX manager), manually trigger registered synchronizations.
+        TransactionSynchronizationManager.getSynchronizations()
+            .forEach(sync -> sync.afterCompletion(TransactionSynchronization.STATUS_COMMITTED));
+
+        verify(seatStatusCacheService).cacheSeatStatusChanges(eq(1L), eq(List.of(1L, 2L)), eq("HELD"));
         verify(messagingService).publishSeatHoldCreated(any(), any());
     }
 

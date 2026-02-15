@@ -20,10 +20,10 @@ public interface EventRepository extends JpaRepository<Event, Long> {
      * Find events by city with pagination and filtering
      */
     @Query("SELECT e FROM Event e WHERE " +
-           "(:city IS NULL OR LOWER(e.city) = LOWER(:city)) AND " +
-           "(:category IS NULL OR LOWER(e.category) = LOWER(:category)) AND " +
-           "(:fromDate IS NULL OR e.eventDate >= :fromDate) AND " +
-           "(:toDate IS NULL OR e.eventDate <= :toDate) AND " +
+           "(CAST(:city AS string) IS NULL OR LOWER(e.city) = LOWER(CAST(:city AS string))) AND " +
+           "(CAST(:category AS string) IS NULL OR LOWER(e.category) = LOWER(CAST(:category AS string))) AND " +
+           "(CAST(:fromDate AS timestamp) IS NULL OR e.eventDate >= :fromDate) AND " +
+           "(CAST(:toDate AS timestamp) IS NULL OR e.eventDate <= :toDate) AND " +
            "e.status = :status " +
            "ORDER BY e.eventDate ASC")
     Page<Event> findEventsWithFilters(@Param("city") String city,
@@ -36,7 +36,7 @@ public interface EventRepository extends JpaRepository<Event, Long> {
     /**
      * Find events by city (most common search)
      */
-    @Query("SELECT e FROM Event e WHERE LOWER(e.city) = LOWER(:city) " +
+    @Query("SELECT e FROM Event e WHERE LOWER(e.city) = LOWER(CAST(:city AS string)) " +
            "AND e.status = com.ticketing.common.enums.EventStatus.PUBLISHED " +
            "AND e.eventDate > :now " +
            "ORDER BY e.eventDate ASC")
@@ -47,7 +47,7 @@ public interface EventRepository extends JpaRepository<Event, Long> {
     /**
      * Find events by category
      */
-    @Query("SELECT e FROM Event e WHERE LOWER(e.category) = LOWER(:category) " +
+    @Query("SELECT e FROM Event e WHERE LOWER(e.category) = LOWER(CAST(:category AS string)) " +
            "AND e.status = com.ticketing.common.enums.EventStatus.PUBLISHED " +
            "AND e.eventDate > :now " +
            "ORDER BY e.eventDate ASC")
@@ -85,7 +85,7 @@ public interface EventRepository extends JpaRepository<Event, Long> {
      * Search events by title (for search autocomplete)
      */
     @Query("SELECT e FROM Event e WHERE " +
-           "LOWER(e.title) LIKE LOWER(CONCAT('%', :query, '%')) " +
+           "LOWER(e.title) LIKE LOWER(CONCAT('%', CAST(:query AS string), '%')) " +
            "AND e.status = com.ticketing.common.enums.EventStatus.PUBLISHED " +
            "AND e.eventDate > :now " +
            "ORDER BY e.eventDate ASC")

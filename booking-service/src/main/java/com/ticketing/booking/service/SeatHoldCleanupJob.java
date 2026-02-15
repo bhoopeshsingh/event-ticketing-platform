@@ -3,6 +3,7 @@ package com.ticketing.booking.service;
 import com.ticketing.booking.repository.SeatHoldRepository;
 import com.ticketing.booking.repository.SeatRepository;
 import com.ticketing.common.entity.SeatHold;
+import com.ticketing.common.service.SeatStatusCacheService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -10,6 +11,8 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -34,6 +37,7 @@ public class SeatHoldCleanupJob {
     private final SeatRepository seatRepository;
     private final EventMessagingService messagingService;
     private final StringRedisTemplate redisTemplate;
+    private final SeatStatusCacheService seatStatusCacheService;
 
     /**
      * Runs every 60 seconds. Finds holds that are ACTIVE in DB but past their expiry time,
@@ -93,14 +97,28 @@ public class SeatHoldCleanupJob {
         hold.expire();
         seatHoldRepository.save(hold);
 
-        messagingService.publishSeatHoldExpired(
-            hold.getHoldToken(),
-            hold.getCustomerId(),
-            eventId,
-            hold.getSeatIds()
-        );
+        // Prepare values for afterCompletion (avoid lazy-load issues)
+        List<Long> seatIdsCopy = List.copyOf(hold.getSeatIds());
+        String holdToken = hold.getHoldToken();
+        Long customerId = hold.getCustomerId();
 
-        log.info("Safety-net: cleaned up hold {} ({} seats released)", hold.getHoldToken(), released);
+        // Update Redis HASH + publish Kafka after DB commit
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status == STATUS_COMMITTED) {
+                    // DB commit succeeded: seats are AVAILABLE
+                    seatStatusCacheService.cacheSeatStatusChanges(eventId, seatIdsCopy, "AVAILABLE");
+                    messagingService.publishSeatHoldExpired(holdToken, customerId, eventId, seatIdsCopy);
+                } else {
+                    // DB rolled back: seats remain HELD — re-affirm in HASH
+                    seatStatusCacheService.cacheSeatStatusChanges(eventId, seatIdsCopy, "HELD");
+                    log.warn("Safety-net cleanup rolled back for hold={}, re-affirmed HELD in Redis HASH", holdToken);
+                }
+            }
+        });
+
+        log.info("Safety-net: cleaned up hold {} ({} seats released)", holdToken, released);
         return true;
     }
 }
