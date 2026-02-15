@@ -114,7 +114,7 @@ CREATE INDEX idx_booking_hold_token ON bookings(hold_token);
 -- - 3 pricing tiers total (for Event #1)
 INSERT INTO events (id, title, description, category, city, venue, event_date, total_capacity, available_seats, base_price, status, organizer_id) VALUES
 (1, 'Rock Concert 2026', 'Amazing rock concert with international artists', 'Music', 'New York', 'Madison Square Garden', '2026-06-15 20:00:00', 100, 100, 150.00, 'PUBLISHED', 1),
-(2, 'Tech Conference 2026', 'Latest trends in technology and AI', 'Technology', 'San Francisco', 'Moscone Center', '2026-07-20 09:00:00', 500, 500, 299.00, 'PUBLISHED', 2),
+(2, 'Tech Conference 2026', 'Latest trends in technology and AI', 'Technology', 'San Francisco', 'Moscone Center', '2026-07-20 09:00:00', 100, 100, 299.00, 'PUBLISHED', 2),
 (3, 'Comedy Show', 'Stand-up comedy night with top comedians', 'Comedy', 'Los Angeles', 'Hollywood Bowl', '2026-08-10 19:30:00', 750, 750, 75.00, 'PUBLISHED', 3)
 ON CONFLICT (id) DO NOTHING;
 
@@ -143,6 +143,27 @@ SELECT
         WHEN (generate_series % 100) < 60 THEN 'Premium'
         ELSE 'Regular'
     END || '-' || CHR(65 + (generate_series / 20)) || ((generate_series % 20) + 1) as seat_identifier
+FROM generate_series(0, 99)
+ON CONFLICT DO NOTHING;
+
+-- Insert sample seats for the second event (100 seats for demo)
+INSERT INTO seats (event_id, section, row_letter, seat_number, price, status, seat_identifier)
+SELECT
+    2 as event_id,
+    CASE
+        WHEN (generate_series % 100) < 10 THEN 'VIP'
+        WHEN (generate_series % 100) < 40 THEN 'Premium'
+        ELSE 'Regular'
+    END as section,
+    CHR(65 + (generate_series / 20)) as row_letter,        -- A..E (5 rows)
+    ((generate_series % 20) + 1) as seat_number,           -- 1..20
+    CASE
+        WHEN (generate_series % 100) < 10 THEN 399.00
+        WHEN (generate_series % 100) < 40 THEN 299.00
+        ELSE 199.00
+    END as price,
+    'AVAILABLE' as status,
+    'CONF' || '-' || CHR(65 + (generate_series / 20)) || ((generate_series % 20) + 1) as seat_identifier
 FROM generate_series(0, 99)
 ON CONFLICT DO NOTHING;
 

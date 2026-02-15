@@ -4,202 +4,198 @@ import com.ticketing.common.service.SeatStatusCacheService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.redis.core.HashOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.ZSetOperations;
 
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
+@org.mockito.junit.jupiter.MockitoSettings(strictness = org.mockito.quality.Strictness.LENIENT)
 class SeatStatusCacheServiceTest {
 
     @Mock
     private StringRedisTemplate redisTemplate;
 
     @Mock
-    private ZSetOperations<String, String> zSetOperations;
+    private HashOperations<String, Object, Object> hashOperations;
 
     @InjectMocks
     private SeatStatusCacheService seatStatusCacheService;
 
     @BeforeEach
     void setUp() {
-        when(redisTemplate.opsForZSet()).thenReturn(zSetOperations);
+        when(redisTemplate.opsForHash()).thenReturn(hashOperations);
     }
 
     @Test
-    void cacheSeatStatusChange_shouldAddToZSetWithTimestamp() {
-        Long eventId = 1L;
-        Long seatId = 123L;
-        String status = "HELD";
+    void cacheSeatStatusChange_shouldSetFieldInHash() {
+        seatStatusCacheService.cacheSeatStatusChange(1L, 123L, "HELD");
 
-        seatStatusCacheService.cacheSeatStatusChange(eventId, seatId, status);
-
-        verify(zSetOperations).add(eq("1:recent_changes:HELD"), eq("123"), anyDouble());
-        verify(zSetOperations).removeRangeByScore(eq("1:recent_changes:HELD"), 
-                                                   eq(Double.NEGATIVE_INFINITY), 
-                                                   anyDouble());
-        verify(redisTemplate).expire(eq("1:recent_changes:HELD"), eq(Duration.ofSeconds(120)));
+        verify(hashOperations).put("1:seat_status", "123", "HELD");
+        verify(redisTemplate).expire("1:seat_status", Duration.ofSeconds(600));
     }
 
     @Test
-    void cacheSeatStatusChanges_shouldBatchAddMultipleSeats() {
-        Long eventId = 1L;
+    void cacheSeatStatusChange_shouldOverwritePreviousStatus() {
+        // First call: seat is AVAILABLE
+        seatStatusCacheService.cacheSeatStatusChange(1L, 5L, "AVAILABLE");
+        verify(hashOperations).put("1:seat_status", "5", "AVAILABLE");
+
+        // Second call: same seat now HELD -- overwrites atomically
+        seatStatusCacheService.cacheSeatStatusChange(1L, 5L, "HELD");
+        verify(hashOperations).put("1:seat_status", "5", "HELD");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void cacheSeatStatusChanges_shouldBatchSetFields() {
         List<Long> seatIds = Arrays.asList(101L, 102L, 103L);
-        String status = "BOOKED";
 
-        seatStatusCacheService.cacheSeatStatusChanges(eventId, seatIds, status);
+        seatStatusCacheService.cacheSeatStatusChanges(1L, seatIds, "BOOKED");
 
-        verify(zSetOperations).add(eq("1:recent_changes:BOOKED"), anySet());
-        verify(zSetOperations).removeRangeByScore(eq("1:recent_changes:BOOKED"), 
-                                                   eq(Double.NEGATIVE_INFINITY), 
-                                                   anyDouble());
-        verify(redisTemplate).expire(eq("1:recent_changes:BOOKED"), eq(Duration.ofSeconds(120)));
+        ArgumentCaptor<Map<String, String>> captor = ArgumentCaptor.forClass(Map.class);
+        verify(hashOperations).putAll(eq("1:seat_status"), captor.capture());
+
+        Map<String, String> captured = captor.getValue();
+        assertThat(captured).hasSize(3);
+        assertThat(captured.get("101")).isEqualTo("BOOKED");
+        assertThat(captured.get("102")).isEqualTo("BOOKED");
+        assertThat(captured.get("103")).isEqualTo("BOOKED");
+        verify(redisTemplate).expire("1:seat_status", Duration.ofSeconds(600));
     }
 
     @Test
     void cacheSeatStatusChanges_withEmptyList_shouldSkip() {
         seatStatusCacheService.cacheSeatStatusChanges(1L, List.of(), "HELD");
 
-        verify(zSetOperations, never()).add(anyString(), anySet());
+        verify(hashOperations, never()).putAll(anyString(), anyMap());
     }
 
     @Test
     void cacheSeatStatusChanges_withNullList_shouldSkip() {
         seatStatusCacheService.cacheSeatStatusChanges(1L, null, "HELD");
 
-        verify(zSetOperations, never()).add(anyString(), anySet());
+        verify(hashOperations, never()).putAll(anyString(), anyMap());
     }
 
     @Test
-    void removeSeatFromStatus_shouldRemoveFromZSet() {
-        Long eventId = 1L;
-        Long seatId = 123L;
-        String oldStatus = "HELD";
+    void removeSeatFromStatus_shouldDeleteField() {
+        seatStatusCacheService.removeSeatFromStatus(1L, 123L, "HELD");
 
-        seatStatusCacheService.removeSeatFromStatus(eventId, seatId, oldStatus);
-
-        verify(zSetOperations).remove("1:recent_changes:HELD", "123");
+        verify(hashOperations).delete("1:seat_status", "123");
     }
 
     @Test
-    void transitionSeatStatus_shouldRemoveFromOldAndAddToNew() {
-        Long eventId = 1L;
-        Long seatId = 123L;
-        String fromStatus = "HELD";
-        String toStatus = "BOOKED";
+    void transitionSeatStatus_shouldOverwriteWithNewStatus() {
+        // transition is just a put (HASH naturally overwrites)
+        seatStatusCacheService.transitionSeatStatus(1L, 123L, "HELD", "BOOKED");
 
-        seatStatusCacheService.transitionSeatStatus(eventId, seatId, fromStatus, toStatus);
-
-        verify(zSetOperations).remove("1:recent_changes:HELD", "123");
-        verify(zSetOperations).add(eq("1:recent_changes:BOOKED"), eq("123"), anyDouble());
+        verify(hashOperations).put("1:seat_status", "123", "BOOKED");
     }
 
     @Test
-    void transitionSeatStatus_withNullFromStatus_shouldOnlyAddToNew() {
-        Long eventId = 1L;
-        Long seatId = 123L;
-        String toStatus = "HELD";
-
-        seatStatusCacheService.transitionSeatStatus(eventId, seatId, null, toStatus);
-
-        verify(zSetOperations, never()).remove(anyString(), anyString());
-        verify(zSetOperations).add(eq("1:recent_changes:HELD"), eq("123"), anyDouble());
-    }
-
-    @Test
-    void transitionSeatStatuses_shouldBatchTransition() {
-        Long eventId = 1L;
+    @SuppressWarnings("unchecked")
+    void transitionSeatStatuses_shouldBatchOverwrite() {
         List<Long> seatIds = Arrays.asList(101L, 102L, 103L);
-        String fromStatus = "HELD";
-        String toStatus = "AVAILABLE";
 
-        seatStatusCacheService.transitionSeatStatuses(eventId, seatIds, fromStatus, toStatus);
+        seatStatusCacheService.transitionSeatStatuses(1L, seatIds, "HELD", "AVAILABLE");
 
-        verify(zSetOperations, times(3)).remove(eq("1:recent_changes:HELD"), anyString());
-        verify(zSetOperations).add(eq("1:recent_changes:AVAILABLE"), anySet());
+        ArgumentCaptor<Map<String, String>> captor = ArgumentCaptor.forClass(Map.class);
+        verify(hashOperations).putAll(eq("1:seat_status"), captor.capture());
+
+        Map<String, String> captured = captor.getValue();
+        assertThat(captured.get("101")).isEqualTo("AVAILABLE");
+        assertThat(captured.get("102")).isEqualTo("AVAILABLE");
+        assertThat(captured.get("103")).isEqualTo("AVAILABLE");
     }
 
     @Test
-    void getRecentChanges_shouldMergeAllStatusSets() {
-        Long eventId = 1L;
+    void getRecentChanges_shouldReturnAllFields() {
+        Map<Object, Object> entries = new HashMap<>();
+        entries.put("101", "HELD");
+        entries.put("102", "HELD");
+        entries.put("103", "BOOKED");
+        entries.put("104", "AVAILABLE");
+        when(hashOperations.entries("1:seat_status")).thenReturn(entries);
 
-        when(zSetOperations.range("1:recent_changes:HELD", 0, -1))
-            .thenReturn(Set.of("101", "102"));
-        when(zSetOperations.range("1:recent_changes:BOOKED", 0, -1))
-            .thenReturn(Set.of("103", "104"));
-        when(zSetOperations.range("1:recent_changes:AVAILABLE", 0, -1))
-            .thenReturn(Set.of("105"));
+        Map<Long, String> changes = seatStatusCacheService.getRecentChanges(1L);
 
-        Map<Long, String> changes = seatStatusCacheService.getRecentChanges(eventId);
-
-        assertThat(changes).hasSize(5);
+        assertThat(changes).hasSize(4);
         assertThat(changes.get(101L)).isEqualTo("HELD");
         assertThat(changes.get(102L)).isEqualTo("HELD");
         assertThat(changes.get(103L)).isEqualTo("BOOKED");
-        assertThat(changes.get(104L)).isEqualTo("BOOKED");
-        assertThat(changes.get(105L)).isEqualTo("AVAILABLE");
+        assertThat(changes.get(104L)).isEqualTo("AVAILABLE");
     }
 
     @Test
-    void getRecentChanges_withNullSets_shouldHandleGracefully() {
-        Long eventId = 1L;
+    void getRecentChanges_eachSeatAppearsExactlyOnce() {
+        // This is the bug scenario: seat 5 was AVAILABLE, then re-HELD.
+        // With HASH, the latest write wins. Seat 5 should only be HELD.
+        Map<Object, Object> entries = new HashMap<>();
+        entries.put("5", "HELD");  // only one entry per seat in a HASH
+        entries.put("6", "AVAILABLE");
+        when(hashOperations.entries("1:seat_status")).thenReturn(entries);
 
-        when(zSetOperations.range(anyString(), anyLong(), anyLong())).thenReturn(null);
+        Map<Long, String> changes = seatStatusCacheService.getRecentChanges(1L);
 
-        Map<Long, String> changes = seatStatusCacheService.getRecentChanges(eventId);
+        assertThat(changes).hasSize(2);
+        assertThat(changes.get(5L)).isEqualTo("HELD");
+        assertThat(changes.get(6L)).isEqualTo("AVAILABLE");
+    }
+
+    @Test
+    void getRecentChanges_withEmptyHash_shouldReturnEmpty() {
+        when(hashOperations.entries("1:seat_status")).thenReturn(new HashMap<>());
+
+        Map<Long, String> changes = seatStatusCacheService.getRecentChanges(1L);
 
         assertThat(changes).isEmpty();
     }
 
     @Test
-    void getRecentStatusCounts_shouldReturnCountsPerStatus() {
-        Long eventId = 1L;
+    void getRecentStatusCounts_shouldAggregate() {
+        Map<Object, Object> entries = new HashMap<>();
+        entries.put("1", "HELD");
+        entries.put("2", "HELD");
+        entries.put("3", "BOOKED");
+        entries.put("4", "AVAILABLE");
+        entries.put("5", "AVAILABLE");
+        when(hashOperations.entries("1:seat_status")).thenReturn(entries);
 
-        when(zSetOperations.zCard("1:recent_changes:HELD")).thenReturn(5L);
-        when(zSetOperations.zCard("1:recent_changes:BOOKED")).thenReturn(10L);
-        when(zSetOperations.zCard("1:recent_changes:AVAILABLE")).thenReturn(2L);
+        Map<String, Long> counts = seatStatusCacheService.getRecentStatusCounts(1L);
 
-        Map<String, Long> counts = seatStatusCacheService.getRecentStatusCounts(eventId);
-
-        assertThat(counts).hasSize(3);
-        assertThat(counts.get("HELD")).isEqualTo(5L);
-        assertThat(counts.get("BOOKED")).isEqualTo(10L);
+        assertThat(counts.get("HELD")).isEqualTo(2L);
+        assertThat(counts.get("BOOKED")).isEqualTo(1L);
         assertThat(counts.get("AVAILABLE")).isEqualTo(2L);
     }
 
     @Test
-    void clearRecentChanges_shouldDeleteAllStatusKeys() {
-        Long eventId = 1L;
+    void clearRecentChanges_shouldDeleteKey() {
+        seatStatusCacheService.clearRecentChanges(1L);
 
-        seatStatusCacheService.clearRecentChanges(eventId);
-
-        verify(redisTemplate).delete("1:recent_changes:HELD");
-        verify(redisTemplate).delete("1:recent_changes:BOOKED");
-        verify(redisTemplate).delete("1:recent_changes:AVAILABLE");
+        verify(redisTemplate).delete("1:seat_status");
     }
 
     @Test
     void cacheSeatStatusChange_withException_shouldLogAndContinue() {
-        Long eventId = 1L;
-        Long seatId = 123L;
-        String status = "HELD";
+        doThrow(new RuntimeException("Redis connection error"))
+            .when(hashOperations).put(anyString(), any(), any());
 
-        when(zSetOperations.add(anyString(), anyString(), anyDouble()))
-            .thenThrow(new RuntimeException("Redis connection error"));
+        // Should not throw
+        seatStatusCacheService.cacheSeatStatusChange(1L, 123L, "HELD");
 
-        seatStatusCacheService.cacheSeatStatusChange(eventId, seatId, status);
-
-        verify(zSetOperations).add(anyString(), anyString(), anyDouble());
+        verify(hashOperations).put(anyString(), any(), any());
     }
 }
