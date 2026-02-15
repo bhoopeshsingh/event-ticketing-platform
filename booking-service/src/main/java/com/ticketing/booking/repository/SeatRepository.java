@@ -39,6 +39,15 @@ public interface SeatRepository extends JpaRepository<Seat, Long> {
     List<Seat> findByIdInWithLock(@Param("seatIds") List<Long> seatIds);
 
     /**
+     * Pessimistic write lock on seats (SELECT ... FOR UPDATE).
+     * Used as the DB-level fallback when Redis is unavailable (degraded mode).
+     * Ordering by id prevents deadlocks across concurrent transactions.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT s FROM Seat s WHERE s.id IN :seatIds ORDER BY s.id")
+    List<Seat> findByIdInForUpdate(@Param("seatIds") List<Long> seatIds);
+
+    /**
      * Find seats by IDs
      */
     @Query("SELECT s FROM Seat s WHERE s.id IN :seatIds ORDER BY s.id")

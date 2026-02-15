@@ -1,21 +1,22 @@
 # Event Ticketing Platform
 
-A scalable, high-performance B2C event ticketing platform with **10-minute seat hold TTL** feature built with Spring Boot microservices architecture.
+A B2C event ticketing platform built as Spring Boot microservices with a **10-minute seat hold (TTL)** flow designed for **zero double bookings**, deterministic auto-release, and auditability.
 
-## 🎯 Core Feature: Seat Hold with 10-Minute Expiry
+## Core feature: seat hold with 10-minute expiry
 
-**The Problem:**
+**Problems solved**
 - Prevent double booking during high-traffic events
 - Give users time to complete payment without locking seats indefinitely
 - Automatically release seats if payment isn't completed
 
-**The Solution:**
-- **Distributed Locking**: Redis-based locks prevent race conditions
-- **TTL-based Expiry**: Redis automatically expires holds after 10 minutes
-- **Event Streaming**: Kafka tracks all state changes for audit trail
-- **Automatic Cleanup**: Background job + Redis keyspace notifications
+**How it works (high level)**
+- **Per-seat Redis hold keys** prevent concurrent holds on the same seat.
+- **PostgreSQL is the source of truth** and guards seat state transitions.
+- **Redis TTL expiry** triggers a keyspace notification; booking service publishes a lightweight Kafka event.
+- **Kafka consumer** performs DB cleanup with retries and publishes audit events.
+- **Real-time seat browsing** uses a short-lived Redis “recent changes” overlay merged with DB seat data.
 
-## 🏗️ Architecture
+## Architecture
 
 ### Implemented Microservices
 1. ✅ **Event Service** (Port 8081) - Event discovery, seat layouts
@@ -34,7 +35,7 @@ A scalable, high-performance B2C event ticketing platform with **10-minute seat 
 - **Build**: Maven 3.8+
 - **Containerization**: Docker Compose
 
-## 📊 Data Model
+## Data model
 
 ### Database Tables (PostgreSQL)
 - **events** - Event catalog (title, venue, date, capacity, status)
@@ -45,40 +46,39 @@ A scalable, high-performance B2C event ticketing platform with **10-minute seat 
 
 ### Sample Data Loaded
 - 3 Events: Rock Concert 2026, Tech Conference 2026, Comedy Show
-- 1000 Seats for Event #1 with multiple pricing tiers
-- 7 Pricing tiers across all events
+- 100 Seats for Event #1 with multiple pricing tiers
+- 3 Pricing tiers across all events
 
-## 🔄 Key Design Patterns
+## Redis key design (current implementation)
 
-### Concurrency Control
-- **Pessimistic Locking**: Database row locks for seat reservation
-- **Distributed Locking**: Redis-based locks across services
-- **Optimistic Locking**: Version-based updates for event metadata
-- **Idempotency**: Request keys to prevent duplicate bookings
+### Per-seat hold keys (locks + TTL)
+- **Key**: `seat:{eventId}:{seatId}:HELD`
+- **Value**: `{customerId}:{holdToken}`
+- **TTL**: hold duration (default 10 minutes)
+- **Acquire**: `SET key value NX EX <ttlSeconds>`
 
-### Resilience Patterns
-- **Circuit Breaker**: Fail-fast for downstream services
-- **Retry with Backoff**: Transient failure recovery
-- **Bulkhead**: Resource isolation between services
-- **Timeout**: Prevent cascading delays
-- **Fallback**: Degraded mode with cached data
+### Real-time seat status overlay
+Event-service merges a short-lived Redis overlay into the DB seat list so users see near real-time changes.
+- **Key (HASH)**: `{eventId}:seat_status`
+- **Field**: seatId (string)
+- **Value**: status (`HELD` | `BOOKED` | `AVAILABLE`)
+- **TTL**: 600 seconds (refreshed on every write)
 
-### Caching Strategy
-- **L1 Cache**: Application-level (Caffeine)
-- **L2 Cache**: Distributed (Redis)
-- **CDN**: Static seat layouts
-- **Write-through**: Update cache on write
-- **Cache-aside**: Read-through pattern
-- **TTL-based Expiry**: Auto-refresh stale data
+Each seat appears as a single HASH field, so status updates overwrite the previous value atomically. No seat can appear in two status groups at once.
 
-### Event Streaming
-- **Seat Hold Created**: When user reserves seats
-- **Seat Hold Expired**: Redis TTL triggers cleanup
-- **Seat Hold Confirmed**: Payment successful
-- **Seat Hold Cancelled**: User/system cancellation
-- **Event Created/Updated**: Organizer actions
+### Redis DB alignment (important)
+For the overlay to work, **both services must use the same Redis database index**.
+- `booking-service`: `spring.data.redis.database` defaults to `0`
+- `event-service`: configured to use the same DB (`0`)
 
-## 🚀 API Endpoints
+## Event streaming (Kafka)
+Lifecycle/audit events published by the booking domain (topic names may vary by environment):
+- `SEAT_HOLD_CREATED`
+- `SEAT_HOLD_EXPIRED` (origin: Redis TTL -> booking service -> Kafka -> DB cleanup)
+- `BOOKING_CONFIRMED`
+- `SEAT_HOLD_CANCELLED`
+
+## API endpoints
 
 ### Event Service (Port 8081)
 ```
@@ -95,7 +95,7 @@ DELETE /api/events/{id}                        # Cancel event
 
 ### Booking Service (Port 8082)
 ```
-POST   /api/bookings/hold                      # Hold seats (10-min TTL)
+POST   /api/bookings/hold                      # Hold seats (e.g. 10-min TTL)
 GET    /api/bookings/hold/{holdToken}          # Check hold status
 POST   /api/bookings/{holdToken}/confirm       # Confirm with payment
 DELETE /api/bookings/hold/{holdToken}          # Cancel hold
@@ -106,7 +106,7 @@ GET    /api/bookings/{bookingReference}        # Get booking details
 - Event Service: http://localhost:8081/swagger-ui.html
 - Booking Service: http://localhost:8082/swagger-ui.html
 
-## 🔐 10-Minute Seat Hold Flow (Implemented)
+## 10-minute seat hold flow (implemented)
 
 ```
 1. User selects seats
@@ -120,11 +120,11 @@ GET    /api/bookings/{bookingReference}        # Get booking details
    }
    ↓
 3. Booking Service:
-   - Acquires distributed lock (Redis SETNX)
-   - Validates seat availability (PostgreSQL)
-   - Creates SeatHold record (DB + Redis with 600s TTL)
-   - Updates seat status to HELD
-   - Publishes "SeatHoldCreated" event (Kafka)
+   - Acquires per-seat Redis hold keys: seat:{eventId}:{seatId}:HELD (SET NX EX)
+   - DB guard update to HELD (reject if already unavailable)
+   - Persists SeatHold in DB (source of truth)
+   - Writes to Redis seat status HASH: {eventId}:seat_status
+   - Publishes audit event (Kafka)
    ↓
 4. Returns hold token to user:
    {
@@ -136,35 +136,29 @@ GET    /api/bookings/{bookingReference}        # Get booking details
 5. User has 10 minutes to complete payment
    ↓
 6a. SUCCESS: POST /api/bookings/{holdToken}/confirm
-    → Create Booking record
-    → Update seat status to BOOKED
-    → Delete hold from Redis
-    → Publish "BookingConfirmed" event
+    → Validate: SeatHold ACTIVE + not expired (DB source of truth, no Redis check)
+    → DB guard: UPDATE seats SET status='BOOKED' WHERE status='HELD'
+    → Create Booking record, confirm SeatHold
+    → afterCommit: update Redis seat status HASH → BOOKED
+    → afterCommit: release per-seat Redis hold keys (if they still exist)
+    → afterCommit: publish "BookingConfirmed" event (Kafka)
    
-6b. TIMEOUT: Redis TTL expires after 10 minutes
-    → Redis keyspace notification "__keyevent@0__:expired"
-    → SeatHoldExpiryService listener triggered
-    → Update seat status to AVAILABLE
-    → Delete SeatHold record
-    → Publish "SeatHoldExpired" event
+6b. TIMEOUT: seat:{eventId}:{seatId}:HELD expires (Redis TTL)
+   → Redis keyspace notification "__keyevent@0__:expired"
+   → Booking service publishes Kafka seat-state transition event
+   → SeatStateConsumer updates DB seat to AVAILABLE (if still HELD)
+   → Update Redis seat status HASH: {eventId}:seat_status → AVAILABLE
+   → Publish audit event
 ```
 
 ### Key Implementation Details
 
 **Distributed Locking:**
 ```java
-// Prevent race conditions across service instances
-String lockKey = "lock:seat:" + seatId;
-Boolean acquired = redisTemplate.opsForValue()
-    .setIfAbsent(lockKey, "locked", 5, TimeUnit.SECONDS);
-```
-
-**Redis TTL:**
-```java
-// Auto-expire hold after 10 minutes
-String holdKey = "seat_hold:" + holdToken;
-redisTemplate.opsForValue()
-    .set(holdKey, seatHoldData, 10, TimeUnit.MINUTES);
+// Per-seat hold key (also acts as the distributed lock)
+String key = String.format("seat:%d:%d:HELD", eventId, seatId);
+String value = customerId + ":" + holdToken;
+Boolean acquired = redisTemplate.opsForValue().setIfAbsent(key, value, holdDuration);
 ```
 
 **Keyspace Notifications:**
@@ -178,7 +172,7 @@ public void init() {
 }
 ```
 
-## 🏃 Quick Start
+## Quick start
 
 ### Prerequisites
 - Java 21
@@ -226,7 +220,7 @@ curl http://localhost:8082/actuator/health
 - **Event Service Swagger**: http://localhost:8081/swagger-ui.html
 - **Booking Service Swagger**: http://localhost:8082/swagger-ui.html
 
-## 🧪 Test the Seat Hold Feature
+## Test the seat hold feature
 
 ### 1. Hold Seats (10-minute TTL)
 ```bash
@@ -258,11 +252,14 @@ curl -X POST http://localhost:8082/api/bookings/hold \
 # Connect to Redis
 docker exec -it ticketing-redis redis-cli
 
-# Check hold exists
-> KEYS seat_hold:*
+# Check per-seat hold keys exist
+> KEYS seat:1:*:HELD
 
-# Watch TTL countdown (seconds remaining)
-> TTL seat_hold:HOLD_1234567890
+# Watch TTL countdown (seconds remaining) for a seat hold key
+> TTL seat:1:1:HELD
+
+# Inspect seat status overlay (HASH)
+> HGETALL 1:seat_status
 
 # Monitor expiry events
 > PSUBSCRIBE '__keyevent@0__:expired'
@@ -301,7 +298,7 @@ curl -X POST http://localhost:8082/api/bookings/HOLD_1234567890/confirm \
   }'
 ```
 
-## 🗄️ Database Connection
+## Connection details
 
 ### PostgreSQL (pgAdmin/DBeaver)
 ```
@@ -318,16 +315,16 @@ Host: localhost
 Port: 6379
 ```
 
-**Redis Commander Web UI:** http://localhost:8888
+Redis Commander Web UI: http://localhost:8888
 
 ### Kafka
 ```
 Bootstrap Servers: localhost:9092
 ```
 
-**Kafka UI Web Interface:** http://localhost:9090
+Kafka UI Web Interface: http://localhost:9090
 
-**CLI Access:**
+CLI access:
 ```bash
 # List topics
 docker exec ticketing-kafka kafka-topics --bootstrap-server localhost:9092 --list
@@ -339,7 +336,7 @@ docker exec ticketing-kafka kafka-console-consumer \
   --from-beginning
 ```
 
-## 🛑 Stop Services
+## Stop services
 
 ```bash
 # Stop Spring Boot services
@@ -352,24 +349,27 @@ docker-compose down
 docker-compose down -v
 ```
 
-## 📚 Additional Files
+## Additional files
 
-- **docker-compose.yml** - Infrastructure configuration
-- **infrastructure/init-db.sql** - Database schema
-- **start-services.sh** - Start all Spring Boot services
-- **stop-services.sh** - Stop all services gracefully
-- **verify-services.sh** - Service health checker
+- `docker-compose.yml` - Infrastructure configuration
+- `start-services.sh` - Start all Spring Boot services
+- `stop-services.sh` - Stop all services gracefully
+- `simple-architecture.mmd` - High-level architecture diagram
+- `seat-hold-flow.mmd` - Seat hold + TTL expiry sequence
+- `REAL_TIME_STATUS_IMPLEMENTATION.md` - Implementation notes for Redis overlay
+- `BUG_FIX_REDIS_DATABASE.md` - Postmortem + fixes for Redis DB alignment and component scanning
 
-## 🎯 Project Status
+## Project status
 
 - ✅ Core seat hold with 10-minute TTL implemented
-- ✅ Distributed locking with Redis
-- ✅ Event streaming with Kafka
+- ✅ Per-seat distributed locking with Redis
+- ✅ Real-time seat browsing overlay (Redis ZSET sliding window)
+- ✅ Event streaming with Kafka (audit trail + expiry processing)
 - ✅ RESTful APIs with Swagger documentation
 - ✅ Docker Compose infrastructure
-- ✅ Sample data loaded (3 events, 100 seats)
+- ✅ Sample data loaded
 
-## 📝 License
+## License
 
 MIT License
 

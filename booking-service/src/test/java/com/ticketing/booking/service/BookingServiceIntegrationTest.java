@@ -7,27 +7,37 @@ import com.ticketing.common.dto.SeatHoldResponse;
 import com.ticketing.common.entity.Event;
 import com.ticketing.common.entity.Seat;
 import com.ticketing.common.entity.SeatHold;
+import com.ticketing.common.service.SeatStatusCacheService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 @SpringBootTest(properties = {
-    "spring.datasource.url=jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1",
+    "spring.datasource.url=jdbc:h2:mem:testdb;MODE=PostgreSQL;DB_CLOSE_DELAY=-1",
     "spring.datasource.driver-class-name=org.h2.Driver",
     "spring.datasource.username=sa",
     "spring.datasource.password=password",
-    "spring.jpa.database-platform=org.hibernate.dialect.H2Dialect", 
-    "spring.jpa.hibernate.ddl-auto=create-drop"
+    "spring.jpa.database-platform=org.hibernate.dialect.H2Dialect",
+    "spring.jpa.hibernate.ddl-auto=none",
+    "spring.sql.init.mode=always",
+    "spring.jpa.defer-datasource-initialization=true",
+    "booking.hold.cleanup.enabled=false"
 })
 @ActiveProfiles("test")
 @Transactional
@@ -42,36 +52,43 @@ class BookingServiceIntegrationTest {
     @Autowired
     private SeatHoldRepository seatHoldRepository;
 
-    @org.springframework.boot.test.mock.mockito.MockBean
+    @MockBean
     private EventMessagingService messagingService;
 
-    @org.springframework.boot.test.mock.mockito.MockBean
+    @MockBean
     private SeatHoldExpiryService expiryService;
 
-    @org.springframework.boot.test.mock.mockito.MockBean
+    @MockBean
     private org.springframework.data.redis.listener.RedisMessageListenerContainer redisMessageListenerContainer;
 
+    // Mock Redis so the normal (non-degraded) path is taken,
+    // avoiding the PESSIMISTIC_WRITE query that H2 doesn't support.
+    @MockBean
+    private StringRedisTemplate redisTemplate;
+
+    @MockBean
+    private SeatStatusCacheService seatStatusCacheService;
+
     private Event testEvent;
-    
-    // We need to persist Event first since Seat references it. 
-    // However, Event entity is in Common but Event Repository is in Event Service.
-    // In strict microservices, Booking Service wouldn't write to Event table.
-    // But since they share the same DB (monolithic database pattern) or at least entities, 
-    // and for integration testing with H2 we need Referential Integrity, we'll need to mock or 
-    // insert data carefully.
-    // 
-    // Looking at `Seat` entity, it has @ManyToOne to Event.
-    // Since we are using H2 and Hibernate ddl-auto=create-drop, we need to insert the Event manually 
-    // using EntityManager or raw SQL if EventRepository is not available in this module.
-    
+
     @Autowired
     private jakarta.persistence.EntityManager entityManager;
 
+    @SuppressWarnings("unchecked")
+    private ValueOperations<String, String> valueOps;
+
+    @SuppressWarnings("unchecked")
     @BeforeEach
     void setUp() {
+        // Configure Redis mock
+        valueOps = mock(ValueOperations.class);
+        when(redisTemplate.opsForValue()).thenReturn(valueOps);
+
+        // Default: Redis SET NX always succeeds (normal path, no degraded mode)
+        when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class)))
+            .thenReturn(true);
+
         // Prepare Database Data
-        
-        // 1. Create Event
         testEvent = Event.builder()
             .title("Integration Test Event")
             .description("Test Description")
@@ -87,10 +104,9 @@ class BookingServiceIntegrationTest {
             .createdAt(LocalDateTime.now())
             .updatedAt(LocalDateTime.now())
             .build();
-            
+
         entityManager.persist(testEvent);
 
-        // 2. Create Seats
         Seat seat1 = Seat.builder()
             .event(testEvent)
             .section("A")
@@ -99,7 +115,7 @@ class BookingServiceIntegrationTest {
             .price(new BigDecimal("50.00"))
             .status(Seat.SeatStatus.AVAILABLE)
             .build();
-            
+
         Seat seat2 = Seat.builder()
             .event(testEvent)
             .section("A")
@@ -115,60 +131,60 @@ class BookingServiceIntegrationTest {
 
     @Test
     void holdSeats_Integration_Success() {
-        // Arrange
-        // Get seat IDs that were just persisted
         List<Seat> availableSeats = seatRepository.findAvailableSeatsByEvent(testEvent.getId());
         List<Long> seatIds = availableSeats.stream().map(Seat::getId).limit(2).toList();
-        
+
         SeatHoldRequest request = SeatHoldRequest.builder()
             .customerId(100L)
             .eventId(testEvent.getId())
             .seatIds(seatIds)
             .build();
 
-        // Act
         SeatHoldResponse response = bookingService.holdSeats(request);
 
-        // Assert
         assertNotNull(response);
         assertNotNull(response.getHoldToken());
         assertEquals(2, response.getSeatCount());
 
+        // Clear persistence context so re-fetch reads actual DB state
+        entityManager.flush();
+        entityManager.clear();
+
         // Verify Database State
-        
-        // 1. Check Seat Status (Should be HELD)
         List<Seat> heldSeats = seatRepository.findAllById(seatIds);
         assertTrue(heldSeats.stream().allMatch(s -> s.getStatus() == Seat.SeatStatus.HELD));
 
-        // 2. Check SeatHold Record created
         Optional<SeatHold> holdOpt = seatHoldRepository.findByHoldToken(response.getHoldToken());
         assertTrue(holdOpt.isPresent());
         assertEquals("ACTIVE", holdOpt.get().getStatus().name());
     }
 
     @Test
-    void holdSeats_Integration_ConcurrentHoldParams() {
-         // Attempt to hold already held seats (Simulation of race condition check at repo level)
-         // First hold
+    void holdSeats_Integration_ConcurrentHoldRejectedByRedis() {
         List<Seat> availableSeats = seatRepository.findAvailableSeatsByEvent(testEvent.getId());
         List<Long> seatIds = availableSeats.stream().map(Seat::getId).limit(2).toList();
-        
+
+        // First hold succeeds (Redis returns true for both seats)
         SeatHoldRequest request1 = SeatHoldRequest.builder()
             .customerId(100L)
             .eventId(testEvent.getId())
             .seatIds(seatIds)
             .build();
-            
-        bookingService.holdSeats(request1);
-        
-        // Second hold for same seats
+
+        SeatHoldResponse firstResponse = bookingService.holdSeats(request1);
+        assertNotNull(firstResponse.getHoldToken());
+
+        // Reconfigure mock: Redis SET NX now returns false (seats are locked)
+        when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class)))
+            .thenReturn(false);
+
+        // Second hold for same seats — Redis rejects
         SeatHoldRequest request2 = SeatHoldRequest.builder()
             .customerId(101L)
             .eventId(testEvent.getId())
             .seatIds(seatIds)
             .build();
-            
-        // Should fail because seats are HELD in DB
+
         assertThrows(BookingException.class, () -> bookingService.holdSeats(request2));
     }
 }

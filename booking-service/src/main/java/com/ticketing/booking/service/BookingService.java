@@ -17,6 +17,8 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import org.springframework.data.redis.RedisConnectionFailureException;
+
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -72,7 +74,7 @@ public class BookingService {
 
     /**
      * Create a seat hold using per-seat Redis locks.
-     * No event-level lock -- each seat is independently lockable via SET NX.
+     * Falls back to DB pessimistic row locking (SELECT ... FOR UPDATE) when Redis is unavailable.
      */
     @Transactional
     public SeatHoldResponse holdSeats(SeatHoldRequest request) {
@@ -83,41 +85,74 @@ public class BookingService {
         String redisValue = seatHoldValue(request.getCustomerId(), holdToken);
         Duration holdDuration = Duration.ofMinutes(defaultHoldDurationMinutes);
 
-        // 1. Acquire per-seat Redis locks (all-or-nothing)
+        // 1. Try per-seat Redis locks (all-or-nothing)
         List<String> acquiredKeys = new ArrayList<>();
-        boolean allAcquired = true;
-
-        for (Long seatId : request.getSeatIds()) {
-            String key = seatHoldKey(eventId, seatId);
-            Boolean acquired = redisTemplate.opsForValue().setIfAbsent(key, redisValue, holdDuration);
-
-            if (Boolean.TRUE.equals(acquired)) {
-                acquiredKeys.add(key);
-            } else {
-                allAcquired = false;
-                break;
-            }
-        }
-
-        if (!allAcquired) {
-            releaseRedisKeys(acquiredKeys, redisValue);
-            throw new BookingException("One or more seats are currently held by another customer");
-        }
+        boolean degradedMode = false;
 
         try {
-            // 2. DB guard: update seats that are NOT booked
-            //    Redis guarantees no concurrent hold conflict.
-            //    DB guards against permanently sold (BOOKED) seats and handles Kafka-lag
-            //    where an expired hold hasn't been cleaned up in DB yet.
-            int updatedSeats = seatRepository.holdSeatsGuarded(request.getSeatIds());
-            if (updatedSeats != request.getSeatIds().size()) {
-                throw new BookingException("One or more selected seats are no longer available");
+            boolean allAcquired = true;
+
+            for (Long seatId : request.getSeatIds()) {
+                String key = seatHoldKey(eventId, seatId);
+                Boolean acquired = redisTemplate.opsForValue().setIfAbsent(key, redisValue, holdDuration);
+
+                if (Boolean.TRUE.equals(acquired)) {
+                    acquiredKeys.add(key);
+                } else {
+                    allAcquired = false;
+                    break;
+                }
             }
 
-            // 3. Fetch seat details for response building
-            List<Seat> seats = seatRepository.findByIdIn(request.getSeatIds());
+            if (!allAcquired) {
+                releaseRedisKeys(acquiredKeys, redisValue);
+                throw new BookingException("One or more seats are currently held by another customer");
+            }
+        } catch (BookingException e) {
+            throw e;  // contention — not a Redis infrastructure failure
+        } catch (RedisConnectionFailureException e) {
+            degradedMode = true;
+            log.warn("Redis unavailable — falling back to DB pessimistic locking for seat hold (event={})", eventId, e);
+        } catch (Exception e) {
+            if (isRedisConnectionError(e)) {
+                degradedMode = true;
+                log.warn("Redis unavailable — falling back to DB pessimistic locking for seat hold (event={})", eventId, e);
+            } else {
+                releaseRedisKeys(acquiredKeys, redisValue);
+                throw e;
+            }
+        }
 
-            // 4. Create seat hold record
+        // Capture for use inside lambdas
+        final boolean isDegradedMode = degradedMode;
+
+        try {
+            List<Seat> seats;
+
+            if (degradedMode) {
+                // ── DB fallback path ──────────────────────────────────────
+                // Pessimistic row lock serializes concurrent holds at DB level.
+                // Strict WHERE status='AVAILABLE' replaces Redis SET NX contention guard.
+                seats = seatRepository.findByIdInForUpdate(request.getSeatIds());
+
+                int updatedSeats = seatRepository.holdSeats(request.getSeatIds());
+                if (updatedSeats != request.getSeatIds().size()) {
+                    throw new BookingException("One or more selected seats are no longer available");
+                }
+            } else {
+                // ── Normal path ───────────────────────────────────────────
+                // Redis SET NX already prevents concurrent hold conflict.
+                // DB guard protects against permanently sold (BOOKED) seats
+                // and handles Kafka-lag where an expired hold hasn't been cleaned up.
+                int updatedSeats = seatRepository.holdSeatsGuarded(request.getSeatIds());
+                if (updatedSeats != request.getSeatIds().size()) {
+                    throw new BookingException("One or more selected seats are no longer available");
+                }
+
+                seats = seatRepository.findByIdIn(request.getSeatIds());
+            }
+
+            // 3. Create seat hold record
             LocalDateTime expiresAt = LocalDateTime.now().plusMinutes(defaultHoldDurationMinutes);
 
             SeatHold seatHold = SeatHold.builder()
@@ -132,34 +167,35 @@ public class BookingService {
 
             seatHold = seatHoldRepository.save(seatHold);
 
-            // 5. Build response (prepare DTOs before afterCommit to avoid lazy-load issues)
+            // 4. Build response (prepare DTOs before afterCompletion to avoid lazy-load issues)
             SeatHoldDto holdDto = convertToDto(seatHold);
             List<Seat> seatsCopy = List.copyOf(seats);
             List<Long> seatIdsCopy = List.copyOf(request.getSeatIds());
 
-            // 6. Redis HASH + Kafka side-effects after DB transaction completes
+            // 5. Redis HASH + Kafka side-effects after DB transaction completes
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCompletion(int status) {
                     if (status == STATUS_COMMITTED) {
-                        // DB commit succeeded: seats are HELD
                         seatStatusCacheService.cacheSeatStatusChanges(eventId, seatIdsCopy, "HELD");
                         messagingService.publishSeatHoldCreated(holdDto, seatsCopy);
+                        if (isDegradedMode) {
+                            log.info("Seat hold committed in degraded mode (DB locks only), event={}", eventId);
+                        }
                     } else {
-                        // DB rolled back: seats remain AVAILABLE — re-affirm in HASH
                         seatStatusCacheService.cacheSeatStatusChanges(eventId, seatIdsCopy, "AVAILABLE");
                         log.warn("Seat hold rolled back for event={}, re-affirmed AVAILABLE in Redis HASH", eventId);
                     }
                 }
             });
 
-            // 7. Build response
+            // 6. Build response
             BigDecimal totalAmount = seats.stream()
                 .map(Seat::getPrice)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-            log.info("Seat hold created: token={} customer={} event={} seats={}",
-                    holdToken, request.getCustomerId(), eventId, request.getSeatIds().size());
+            log.info("Seat hold created: token={} customer={} event={} seats={} degraded={}",
+                    holdToken, request.getCustomerId(), eventId, request.getSeatIds().size(), isDegradedMode);
 
             SeatHoldResponse response = new SeatHoldResponse();
             response.setHoldToken(holdDto.getHoldToken());
@@ -172,15 +208,39 @@ public class BookingService {
             response.setTimeRemainingSeconds(holdDto.getTimeRemainingSeconds());
             response.setStatus(holdDto.getStatus());
             response.setCreatedAt(holdDto.getCreatedAt());
-            response.setMessage("Seats held successfully. Complete payment within " +
-                    defaultHoldDurationMinutes + " minutes.");
+            response.setMessage(isDegradedMode
+                    ? "Seats held successfully (degraded mode — no Redis TTL). Complete payment within " +
+                      defaultHoldDurationMinutes + " minutes."
+                    : "Seats held successfully. Complete payment within " +
+                      defaultHoldDurationMinutes + " minutes.");
 
             return response;
 
+        } catch (BookingException e) {
+            if (!isDegradedMode) {
+                releaseRedisKeys(acquiredKeys, redisValue);
+            }
+            throw e;
         } catch (Exception e) {
-            releaseRedisKeys(acquiredKeys, redisValue);
+            if (!isDegradedMode) {
+                releaseRedisKeys(acquiredKeys, redisValue);
+            }
             throw e;
         }
+    }
+
+    /**
+     * Check if an exception root-caused by a Redis connection failure.
+     */
+    private static boolean isRedisConnectionError(Throwable ex) {
+        Throwable cause = ex;
+        while (cause != null) {
+            if (cause instanceof RedisConnectionFailureException) {
+                return true;
+            }
+            cause = cause.getCause();
+        }
+        return false;
     }
 
     /**

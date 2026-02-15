@@ -102,6 +102,9 @@ public class GlobalExceptionHandler {
     }
 
     private HttpStatus determineStatusCode(String message) {
+        if (message == null) {
+            return HttpStatus.BAD_REQUEST;
+        }
         String lowerMessage = message.toLowerCase();
 
         if (lowerMessage.contains("expired") || lowerMessage.contains("timeout")) {

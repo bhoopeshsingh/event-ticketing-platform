@@ -147,7 +147,6 @@
                         </goals>
                     </execution>
                     <!-- Temporarily disabled - will re-enable after tests pass -->
-                    <!--
                     <execution>
                         <id>check</id>
                         <goals>
@@ -161,14 +160,13 @@
                                         <limit>
                                             <counter>INSTRUCTION</counter>
                                             <value>COVEREDRATIO</value>
-                                            <minimum>0.60</minimum>
+                                            <minimum>0.80</minimum>
                                         </limit>
                                     </limits>
                                 </rule>
                             </rules>
                         </configuration>
                     </execution>
-                    -->
                 </executions>
             </plugin>
         </plugins>
